@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "simmis Web Intake",
+  "version": "0.3.0",
+  "description": "Capture the pages you browse into your private simmis archive — your agents mine them for contacts, events and trends.",
+  "permissions": ["activeTab", "storage", "scripting", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "capture-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+D",
+        "mac": "MacCtrl+Shift+D"
+      },
+      "description": "Capture the current page into simmis"
+    }
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

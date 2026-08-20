@@ -1,0 +1,70 @@
+;; Copy to `config.local.edn` (gitignored) and edit.
+;;
+;; Everything here is OPTIONAL except `:alpha-users` — without at least one
+;; account there is no way to log in, because simmis has no self-registration.
+;;
+;; Secrets belong in this file or in the environment, never in the repo.
+
+{;; ---------------------------------------------------------------------------
+ ;; Accounts. Seeded at boot; existing accounts are never modified, so changing
+ ;; a password here does NOT change it in the database — delete the store or
+ ;; change it in the UI.
+ ;;
+ ;; :role — :admin unlocks the admin panel (users, models, budgets). Anything
+ ;; else is an ordinary member.
+ :alpha-users
+ [{:email "you@example.com"
+   :name "Your Name"
+   :handle "you"                ;; what @mentions resolve to; must be unique
+   :password "change-me"
+   :role :admin}]
+
+ ;; ---------------------------------------------------------------------------
+ ;; Telegram mirror (optional). A room can be mirrored into a Telegram chat;
+ ;; messages flow both ways and agents answer in either place.
+ ;;
+ ;; The token can also come from TELEGRAM_BOT_TOKEN.
+ ;; :allowed-users gates who may talk to the bot — numeric ids or "@handle".
+ ;; LEAVE IT SET: an empty allowlist means anyone who finds the bot can post
+ ;; into your rooms (dvergr warns at boot, but it does not refuse).
+ #_:telegram #_{:token "123456:ABC-DEF..."
+                :allowed-users #{123456789 "@your-handle"}}
+
+ ;; ---------------------------------------------------------------------------
+ ;; External identity providers (optional). Tokens from these issuers are
+ ;; accepted alongside simmis's own, on the same socket — this is how WorkOS,
+ ;; Clerk, Auth0 or Google sign-in attach. `:jwks-url` keys rotate and are
+ ;; fetched on demand; `:public-key` pins a static one instead.
+ #_:oidc-issuers #_[{:iss "https://your-tenant.authkit.app"
+                     :jwks-url "https://your-tenant.authkit.app/oauth2/jwks"
+                     :alg :RS256}]}
+
+;; -----------------------------------------------------------------------------
+;; Environment variables (NOT this file)
+;;
+;;   SIMMIS_JWT_SECRET   Signing secret for simmis's own tokens. Unset in
+;;                       development: a secret is generated once and persisted
+;;                       to .dvergr/jwt-secret so sessions survive restarts.
+;;                       SET IT IN PRODUCTION — otherwise the secret lives in a
+;;                       file next to the data it protects.
+;;
+;;   SIMMIS_DEV_AUTH     Set to "true" ONLY on a throwaway instance. It enables
+;;                       POST /auth/dev, which mints a valid token for ANY email
+;;                       and creates the account if missing. There is no password
+;;                       check. simmis warns loudly on every boot while it is on.
+;;
+;;   SIMMIS_ALLOW_SELF_REGISTRATION
+;;                       Set to "true" to enable POST /auth/register, which lets
+;;                       anyone who can reach the server create an account. OFF by
+;;                       default: accounts come from :alpha-users below, and an
+;;                       account is what every :authenticated RPC checks for.
+;;                       simmis warns on every boot while it is on.
+;;
+;;   FIREWORKS_API_KEY   LLM providers. Agents fall back to
+;;   OPENAI_API_KEY      accounts/fireworks/models/glm-5p2, so FIREWORKS_API_KEY
+;;   ANTHROPIC_API_KEY   is the least-effort option. Point OPENAI_BASE_URL +
+;;   GROQ_API_KEY        OPENAI_API_KEY at any OpenAI-compatible endpoint
+;;                       (including a local one) to use that instead.
+;;
+;;   SIMMIS_JITSI_URL    Jitsi deployment backing the :video tab.
+;;                       Default http://localhost:9100.

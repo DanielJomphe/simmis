@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simmis Block Editor - Phase 1</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .block-editor-app {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .editor-header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .editor-header h1 {
+            margin: 0 0 8px 0;
+            font-size: 28px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .editor-header .subtitle {
+            margin: 0;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .blocks-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 20px;
+            min-height: 400px;
+        }
+
+        .block {
+            display: flex;
+            align-items: flex-start;
+            padding: 4px 0;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .block:hover {
+            background: #f8f8f8;
+        }
+
+        .block.focused {
+            background: #e8f4fd;
+        }
+
+        .block.hidden {
+            display: none;
+        }
+
+        .block-bullet {
+            width: 24px;
+            flex-shrink: 0;
+            text-align: center;
+            padding-top: 4px;
+            color: #999;
+            font-size: 12px;
+            user-select: none;
+        }
+
+        .collapse-toggle {
+            cursor: pointer;
+            font-family: monospace;
+            font-weight: bold;
+            color: #666;
+        }
+
+        .collapse-toggle:hover {
+            color: #333;
+        }
+
+        .bullet {
+            color: #ccc;
+        }
+
+        .block-content {
+            flex: 1;
+            min-height: 24px;
+        }
+
+        /* TipTap editor styles */
+        .block-content .ProseMirror {
+            outline: none;
+            padding: 2px 4px;
+            min-height: 24px;
+        }
+
+        .block-content .ProseMirror p {
+            margin: 0;
+        }
+
+        .block-content .ProseMirror:focus {
+            background: transparent;
+        }
+
+        /* Wiki link styles */
+        .page-reference {
+            background: #e8f4fd;
+            color: #0066cc;
+            padding: 1px 4px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .page-reference:hover {
+            background: #d0e8f8;
+        }
+
+        .block-reference {
+            background: #fff3e0;
+            color: #e65100;
+            padding: 1px 4px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+
+        .block-reference:hover {
+            background: #ffe0b2;
+        }
+
+        .editor-footer {
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #888;
+            margin: 0;
+        }
+
+        /* Suggestion dropdown styles */
+        .suggestion-dropdown {
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            padding: 4px;
+            min-width: 200px;
+        }
+
+        .suggestion-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .suggestion-item:hover,
+        .suggestion-item-selected {
+            background: #f0f0f0;
+        }
+
+        .suggestion-empty {
+            color: #999;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div id="editor-container"></div>
+    <div id="focus-container"></div>
+    <script src="/js/block-editor.js"></script>
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simmis Wiki</title>
+  <link rel="stylesheet" href="/simmis.css">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    /* App Shell */
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #f8f9fa;
+    }
+
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      background: #fff;
+      border-bottom: 1px solid #e0e0e0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    .header-left, .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 120px;
+    }
+
+    .header-center {
+      flex: 1;
+      text-align: center;
+    }
+
+    .header-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 500;
+      color: #333;
+    }
+
+    .header-home {
+      font-weight: 600;
+      color: #333;
+      text-decoration: none;
+    }
+
+    .header-home:hover {
+      color: #007bff;
+    }
+
+    .header-btn {
+      padding: 6px 12px;
+      background: transparent;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+      text-decoration: none;
+      color: #333;
+    }
+
+    .header-btn:hover {
+      background: #f0f0f0;
+    }
+
+    .app-main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    /* Pages List */
+    .pages-list-container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .pages-list-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .pages-list-header h2 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 500;
+    }
+
+    .create-page-btn {
+      padding: 8px 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .create-page-btn:hover {
+      background: #0056b3;
+    }
+
+    .create-page-btn.large {
+      padding: 12px 24px;
+      font-size: 16px;
+    }
+
+    .pages-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .page-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .page-item:hover {
+      background: #f8f9fa;
+      border-color: #007bff;
+    }
+
+    .page-icon {
+      font-size: 20px;
+    }
+
+    .page-title {
+      font-size: 16px;
+      color: #333;
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #666;
+    }
+
+    .empty-state p {
+      margin-bottom: 20px;
+      font-size: 16px;
+    }
+
+    /* Block Editor */
+    .block-editor {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .blocks-container {
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 300px;
+    }
+
+    .editor-help {
+      margin-top: 16px;
+      text-align: center;
+    }
+
+    .help-text {
+      font-size: 12px;
+      color: #999;
+    }
+
+    /* Block Styles (shared with block-editor) */
+    .block {
+      display: flex;
+      align-items: flex-start;
+      padding: 4px 0;
+    }
+
+    .block.hidden {
+      display: none;
+    }
+
+    .block-bullet {
+      width: 24px;
+      flex-shrink: 0;
+      text-align: center;
+      color: #999;
+      cursor: pointer;
+    }
+
+    .collapse-toggle {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .collapse-toggle:hover {
+      color: #333;
+    }
+
+    .block-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .block-content .tiptap {
+      outline: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .block-content .tiptap:focus {
+      background: #f0f7ff;
+    }
+
+    .block-content .tiptap p {
+      margin: 0;
+    }
+
+    /* Not Found */
+    .not-found {
+      text-align: center;
+      padding: 60px 20px;
+    }
+
+    .not-found h2 {
+      color: #333;
+    }
+
+    .not-found a {
+      color: #007bff;
+    }
+
+    /* Loading */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="loading">
+      <p>Loading Simmis Wiki...</p>
+    </div>
+  </div>
+  <script src="js/app.js"></script>
+</body>
+</html>

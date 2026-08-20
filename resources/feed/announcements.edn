@@ -1,0 +1,26 @@
+;; System announcements — the :system source of the Feed.
+;;
+;; A file, not a table: these are authored by whoever runs the deployment, they
+;; are the same for everyone, and they change without anyone's data changing.
+;; Read per request rather than at load, so editing this file is enough — no
+;; restart, no migration, and no schema for three sentences.
+;;
+;; When a per-user or dismissible announcement is genuinely needed, THAT wants a
+;; row (who saw what, when). This does not, and giving it one now would be a
+;; table nobody writes to.
+;;
+;; :at is when it was published; :kind drives the icon and colour.
+[{:id :usage-limits-2026-07
+  :kind :limits
+  :at #inst "2026-07-24T09:00:00.000-00:00"
+  :title "Usage limits raised"
+  :body "Per-workspace model budgets are up 4× for the alpha. Existing budgets
+         are unchanged — raise yours in Settings if you want the headroom."}
+
+ {:id :timelines-beta-2026-07
+  :kind :beta
+  :at #inst "2026-07-26T08:00:00.000-00:00"
+  :title "Timelines is in beta"
+  :body "The time strip now opens a full view: scrub the workspace to any past
+         commit, and see the proposed futures branching off now. Read-only in
+         the past; entering a future is coming."}]

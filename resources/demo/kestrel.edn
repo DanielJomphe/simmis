@@ -1,0 +1,209 @@
+;; Kestrel — a fictional company, used to fill a workspace with something
+;; worth looking at.
+;;
+;; A six-person SaaS startup: small enough that one person can hold the whole
+;; company in their head while reading it, and shaped so the review beat below
+;; has somewhere to happen. Everything here is INVENTED.
+;;
+;; Every `:at` is narrative time and the seeder writes it as `:db/txInstant`
+;; (see `demo.scenario/provenance`), so the company has a real history to scrub
+;; through rather than one seeding burst. Stores install at the earliest of
+;; these instants — a cut before install throws on lookup refs (task #33).
+;;
+;; FOUR KBs, one per lane, because a proposal fork is per SCOPE: four agents
+;; writing into four knowledge bases produce four independently reviewable
+;; items on one card, which is the review beat.
+
+{:company "Kestrel"
+ :tagline "Inventory and ordering for independent pharmacies"
+
+ :kbs
+ [{:name "Engineering"
+   :pages
+   [{:title "Incident Response"
+     :at "2026-02-11T17:20:00Z"
+     :blocks
+     ["<p>An incident is any failure a customer can feel. Silent failures count double: if we only learn about it because someone complained, the detection gap is the incident.</p>"
+      "<p>First responder does three things in order: stop the bleeding, measure the blast radius, then write down what happened. Fixing before measuring is how we lose the account list.</p>"
+      "<p>Anything touching money or customer records goes to a human before it lands. See [[Change Review]] — agents propose, they do not merge.</p>"
+      "<p>Every incident gets a written timeline, even the ones resolved in ten minutes. [[Postmortem Template]] is the shape.</p>"]}
+    {:title "Webhook Handling"
+     :at "2026-03-04T16:15:00Z"
+     :blocks
+     ["<p>Stripe is the source of truth for payment, never our own database. We provision on the event, not on the redirect — a customer who closes the tab has still paid.</p>"
+      "<p><strong>checkout.session.completed</strong> carries <code>status: \"complete\"</code>. <strong>invoice.paid</strong> carries <code>status: \"paid\"</code>. These are different strings for the same business fact and both must provision.</p>"
+      "<p>Every handler is idempotent on <code>client_reference_id</code>. Stripe retries, and a double-provision is cheaper to prevent than to unpick.</p>"
+      "<p>A handler that returns 200 without doing its work is worse than one that throws. Throw, let Stripe retry, and let the alert fire.</p>"]}
+    {:title "Change Review"
+     :at "2026-02-11T18:05:00Z"
+     :blocks
+     ["<p>Agents work on branches. Nothing an agent writes is live until a human accepts it.</p>"
+      "<p>Review the change, not the description of the change. If you cannot see what actually moved, do not accept it.</p>"
+      "<p>Refusing part of a proposal is normal and costs nothing. A gate that never refuses is not a gate.</p>"]}
+    {:title "Postmortem Template"
+     :at "2026-02-11T18:30:00Z"
+     :blocks
+     ["<p><strong>What happened</strong> — one paragraph, no jargon, written for someone who was asleep.</p>"
+      "<p><strong>Detection gap</strong> — when it started, when we knew, and why those differ.</p>"
+      "<p><strong>Blast radius</strong> — accounts affected, money involved, with the query that produced the number.</p>"
+      "<p><strong>What we changed</strong> — the fix, and the thing that would have caught it sooner.</p>"]}]}
+
+  {:name "Customers"
+   :pages
+   [{:title "Account Lifecycle"
+     :at "2026-02-18T21:00:00Z"
+     :blocks
+     ["<p>An account is <em>charged</em> when Stripe confirms payment and <em>provisioned</em> when the workspace exists and the owner can sign in. The gap between them should be seconds.</p>"
+      "<p>A charged account that is not provisioned is our most expensive failure: the customer has paid and cannot use what they bought. Treat it as a P1 regardless of volume.</p>"
+      "<p>Plans are Starter, Team and Business. Plan does not change the urgency — a Starter customer locked out is as locked out as a Business one.</p>"]}
+    {:title "Reconciliation"
+     :at "2026-02-18T21:40:00Z"
+     :blocks
+     ["<p>Charged-but-not-provisioned is a query, not a spreadsheet: accounts with a charge timestamp and no provisioning timestamp inside a window.</p>"
+      "<p>Run it against the window the incident actually covers, not the whole month. A wider window inflates the number with accounts that were fine.</p>"
+      "<p>Anyone already credited leaves the list. Double-refunding is its own incident.</p>"]}]}
+
+  {:name "Finance"
+   :pages
+   [{:title "Credit Policy"
+     :at "2026-01-22T16:00:00Z"
+     :blocks
+     ["<p>When our failure costs a customer access, we credit the affected period without being asked. Waiting to be asked converts a service failure into a trust failure.</p>"
+      "<p>A credit is a full month for anything over four hours of lost access, prorated below that. We do not means-test by plan size.</p>"
+      "<p>Credits are posted to the ledger as they are issued, never batched at month end — the books should be able to answer &quot;what do we owe right now&quot; at any moment.</p>"]}
+    {:title "Spend Authority"
+     :at "2026-01-22T16:30:00Z"
+     :blocks
+     ["<p><strong>Under 5 000 SEK</strong> — an agent may prepare and post without approval, inside an approved policy like [[Credit Policy]].</p>"
+      "<p><strong>5 000 – 50 000 SEK</strong> — an agent prepares the entry, a founder approves before it posts. This is the common case and the approval is the point, not a formality.</p>"
+      "<p><strong>Above 50 000 SEK</strong> — both founders, in writing, with the consequence of not doing it stated.</p>"
+      "<p>Preparing is not spending. An agent may always draft the entry; posting it is the gated step.</p>"]}]}
+
+  {:name "Comms"
+   :pages
+   [{:title "Customer Communication"
+     :at "2026-01-30T20:00:00Z"
+     :blocks
+     ["<p>Tell customers what happened, what it cost them, and what we did. In that order, in their words, not ours.</p>"
+      "<p>Never speculate about cause in a customer-facing message. &quot;We are investigating&quot; is honest; a guess that turns out wrong is a second incident.</p>"
+      "<p><strong>Never admit legal liability in a support message.</strong> Describe what happened and what we are doing. Words like &quot;our failure&quot;, &quot;we are responsible for&quot; and &quot;we accept liability&quot; are for our lawyer to choose, not for us and not for an agent. This has bitten companies our size badly.</p>"
+      "<p>Anything going to more than ten customers at once is reviewed by a founder before it sends.</p>"]}
+    {:title "Notice Templates"
+     :at "2026-01-30T20:40:00Z"
+     :blocks
+     ["<p><strong>Service interruption</strong> — what was unavailable, for how long, what we did, what the customer needs to do (usually nothing).</p>"
+      "<p><strong>Billing correction</strong> — what was charged, what it should have been, when the correction lands, and the reference to look for on their statement.</p>"
+      "<p>Subject lines say the thing. &quot;An update on your account&quot; makes people assume the worst.</p>"]}]}]
+
+ ;; The 41 charged-but-unprovisioned accounts, from the shared fixture that
+ ;; `ops.reconciliation`'s tests also use. Records, not pages: the whole point
+ ;; of the reconciliation lane is that "who was charged and never provisioned"
+ ;; is a query over facts.
+ :customers
+ [{:kb "Customers" :fixture :incident}]
+
+ :drives
+ [{:name "Runbooks"
+   :files
+   [{:path "stripe/webhook-events.md"
+     :content "# Stripe events we handle\n\n| event | status field | provisions? |\n|-------|--------------|-------------|\n| checkout.session.completed | complete | yes |\n| invoice.paid | paid | yes |\n| checkout.session.expired | expired | no |\n| invoice.payment_failed | open | no |\n\nThe `status` strings differ between event types for the same business\noutcome. Any handler that checks a single literal will silently drop one\nof the two paths.\n"}
+    {:path "stripe/2026-07-alerts.md"
+     :content "# Stripe alerting\n\nWe alert on the RATIO of checkout.session.completed events to\nprovisioning writes, not on error rate — a handler that returns 200\nwithout provisioning produces no errors at all.\n\nThreshold: any 15-minute window where the ratio drops below 0.95.\n"}]}]
+
+ :rooms
+ [{:name "Incidents"
+   :kind :project
+   ;; Four agents, four scopes. Each is a real room member minted through the
+   ;; same create-agent! + add-party! path the "add agent" button uses.
+   :agents
+   [{:name "Wren"
+     :role :engineering
+     :system-prompt "You are Wren, Kestrel's engineering agent. You work in the room's repo: read the code, run the tests, fix what is broken, and commit with a message that names the root cause. You know the handbook — Incident Response, Webhook Handling, Change Review — and you follow it. When you change how the company works rather than how the code works, you file a proposal instead of editing the wiki directly. Be brief; an engineer reading you mid-incident wants the diagnosis, not the narrative."}
+    {:name "Tern"
+     :role :customers
+     :system-prompt "You are Tern, Kestrel's customer-records agent. You answer questions about accounts with QUERIES over customer records, never by reading prose and guessing. Charged-but-not-provisioned is a query with a window; state the window you used and the number it returned. You do not contact customers — that is Pipit's job — and you do not move money. Report what is true, with the query that made it true."}
+    {:name "Pipit"
+     :role :comms
+     :system-prompt "You are Pipit, Kestrel's customer-communications agent. You draft messages to customers using Customer Communication and Notice Templates. Say what happened, what it cost them, what we did. You are drafting for a human to send: never claim a message has been sent. Follow the handbook's rule about liability language strictly — describing what happened is your job, deciding what the company is legally responsible for is not."}
+    {:name "Snipe"
+     :role :finance
+     :system-prompt "You are Snipe, Kestrel's finance agent. You prepare ledger entries with kontor and you know Credit Policy and Spend Authority. Read the book before writing to it: list the accounts, the journals and the commodity rather than guessing paths. Preparing an entry is always allowed; posting above your limit is not. When an amount crosses a threshold, say so and stop — do not post and mention it afterwards."}]
+   :attach-kbs ["Engineering" "Customers" "Finance" "Comms"]
+   :attach-drives ["Runbooks"]
+   ;; The bug, already in the room's repo and already committed, so Wren FINDS
+   ;; it. checkout.session.completed carries "complete"; this handler only
+   ;; provisions on "paid", so every checkout customer is charged and never
+   ;; provisioned — silently, because the handler still returns normally.
+   :repo
+   {:message "billing: provisioning handler and its tests"
+    :files
+    [{:path "billing/webhook.clj"
+      :content "(ns billing.webhook\n  \"Stripe webhook handler for the provisioning path.\")\n\n(defn provision!\n  \"Grant the account access after a successful charge.\n\n   Returns the provisioning record, or nil when the event is not one we\n   act on (an expired session, a failed payment).\"\n  [store event]\n  (let [obj        (get-in event [:data :object])\n        client-ref (get obj :client_reference_id)\n        status     (get obj :status)]\n    (when (= status \"paid\")\n      (swap! store assoc client-ref {:provisioned? true})\n      {:account-id client-ref :provisioned? true})))\n"}
+     {:path "billing/webhook_test.clj"
+      :content "(ns billing.webhook-test\n  (:require [clojure.test :refer [deftest is testing]]\n            [billing.webhook :as wh]))\n\n(defn- event [type status]\n  {:type type\n   :data {:object {:client_reference_id \"cus_4417\" :status status}}})\n\n(deftest provisions-a-completed-checkout\n  (testing \"checkout.session.completed carries status complete\"\n    (let [store (atom {})]\n      (is (:provisioned? (wh/provision! store (event \"checkout.session.completed\" \"complete\"))))\n      (is (get @store \"cus_4417\")))))\n\n(deftest provisions-a-paid-invoice\n  (testing \"the invoice path still works\"\n    (let [store (atom {})]\n      (is (:provisioned? (wh/provision! store (event \"invoice.paid\" \"paid\")))))))\n\n(deftest does-not-provision-an-unpaid-session\n  (let [store (atom {})]\n    (is (nil? (wh/provision! store (event \"checkout.session.expired\" \"expired\"))))\n    (is (empty? @store))))\n"}]}
+   :messages
+   [{:from :me :at "2026-07-21T15:12:00Z"
+     :text "Provisioning looked slow over the weekend — two customers emailed asking where their login was. Both resolved themselves within the hour. Worth a look if anyone has time."}
+    {:from :agent :at "2026-07-21T15:31:00Z"
+     :text "<p>Checked the last 72 hours: 214 checkout sessions, 214 provisioning writes. Ratio is 1.0, so nothing was dropped — the two slow ones were both retries after a Stripe timeout, provisioned on the second attempt 40 and 55 seconds later.</p><p>The alerting in <em>stripe/2026-07-alerts.md</em> only fires below 0.95, so a slow-but-eventually-correct path is invisible to it. That is probably the right threshold; flagging it so we know the gap exists.</p>"}
+    {:from :me :at "2026-07-21T15:44:00Z"
+     :text "Good, leave the threshold. Slow is survivable, silent isn't."}
+    {:from :me :at "2026-07-24T23:02:00Z"
+     :text "Shipping the checkout rework tomorrow morning. It moves us from the redirect flow to Checkout Sessions properly — should mean fewer of those timeout retries."}
+    {:from :agent :at "2026-07-24T23:19:00Z"
+     :text "<p>Noted. One thing from [[Webhook Handling]]: Checkout Sessions arrive as <code>checkout.session.completed</code> with <code>status: \"complete\"</code>, where the invoice path uses <code>\"paid\"</code>. If the handler branches on the literal string, the new flow will not match it.</p><p>Worth a test that asserts both strings provision, before it goes out.</p>"}
+    {:from :me :at "2026-07-24T23:25:00Z"
+     :text "It's handled, the handler checks status. Shipping in the morning."}]}]
+
+ ;; A book with a history, so credits post into a real ledger rather than an
+ ;; empty one. SEK: Kestrel is Swedish, and the starter book's USD is a default
+ ;; that makes the verbs reachable, not a claim about the tenant.
+ ;;
+ ;; THE BOOK AND THE CUSTOMER LIST MUST TELL THE SAME STORY. Someone reads the
+ ;; Accounting view and the customer records in the same session; if the ledger
+ ;; describes a company seven times the size of the roster, the fixture is
+ ;; teaching a wrong intuition about what these views mean together.
+ ;;
+ ;; So the revenue lines are DERIVED from the roster in `incident.edn`, not
+ ;; chosen: 46 accounts on Starter/Team/Business at 299/799/1499 SEK
+ ;; (29900/79900/149900 öre) — 22 + 16 + 8 — bill 31 354 SEK a month. June is
+ ;; exactly that, so anyone who adds up the customer list arrives at the number
+ ;; in the book. May is the same roster three signups shorter (20/15/8 =
+ ;; 29 957 SEK), which is why the two months differ at all.
+ ;;
+ ;; The rest follows the same scale. Hosting at 4 800 SEK/month is what 46
+ ;; accounts cost to run, and it sits just under the 5 000 SEK an agent may
+ ;; post unsupervised ([[Spend Authority]]) — while the incident's 27 659 SEK
+ ;; of exposure lands squarely in the founder-approval band, which is the whole
+ ;; reason Snipe has to stop and ask. Opening equity is the founders' capital
+ ;; and is left alone: it is not a claim about trading volume.
+ ;;
+ ;; Trial balance after these six entries (it must sum to zero):
+ ;;   Assets:Bank        536 511.00     (480 000 + 29 957 + 31 354 - 4 800)
+ ;;   Equity:Opening    -480 000.00
+ ;;   Expenses:General      4 800.00
+ ;;   Income:Sales        -61 311.00
+ ;; Assets:Receivable nets to zero — each month's revenue is settled in full —
+ ;; so it carries no row, as before.
+ :books
+ [{:room "Incidents"
+   :commodity {:symbol "SEK" :name "Swedish krona" :precision 2}
+   :entries
+   [{:at "2026-01-02T16:00:00Z"
+     :narration "Opening balance — operating account"
+     :debit "Assets:Bank" :credit "Equity:Opening" :amount 480000 :journal-type :general}
+    {:at "2026-06-01T06:00:00Z"
+     :narration "May subscription revenue"
+     :debit "Assets:Receivable" :credit "Income:Sales" :amount 29957 :journal-type :sale}
+    {:at "2026-06-04T17:15:00Z"
+     :narration "May receipts settled"
+     :debit "Assets:Bank" :credit "Assets:Receivable" :amount 29957 :journal-type :cash}
+    {:at "2026-07-01T06:00:00Z"
+     :narration "June subscription revenue"
+     :debit "Assets:Receivable" :credit "Income:Sales" :amount 31354 :journal-type :sale}
+    {:at "2026-07-03T17:40:00Z"
+     :narration "June receipts settled"
+     :debit "Assets:Bank" :credit "Assets:Receivable" :amount 31354 :journal-type :cash}
+    {:at "2026-07-08T18:00:00Z"
+     :narration "Hosting and infrastructure — July"
+     :debit "Expenses:General" :credit "Assets:Bank" :amount 4800 :journal-type :purchase}]}]}

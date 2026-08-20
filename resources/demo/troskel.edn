@@ -1,0 +1,399 @@
+;; Tröskel — a fictional company used to fill a simmis workspace with something
+;; worth looking at, and to give agent benchmarks a world to reason over.
+;;
+;; The premise is deliberately agent-shaped: property management is a stream of
+;; small judgement calls against written policy (is this repair urgent? does this
+;; deposit deduction comply? has rent actually cleared?), which is exactly the
+;; work an agent can do if — and only if — it can read the handbook, the ledger
+;; and the conversation together. That is the product claim, so the demo data
+;; has to make the claim checkable rather than assert it.
+;;
+;; Everything here is invented. Any resemblance to a real company is accidental.
+;;
+;; Timestamps are explicit so the seeded timeline is identical on every run;
+;; see is.simm.demo.scenario for why that matters.
+
+{:company "Tröskel"
+ :tagline "Agentic property management"
+
+ :kbs
+ [{:name "Tröskel Handbook"
+   :pages
+   [{:title "Tröskel"
+     :at "2026-03-02T09:00:00Z"
+     :blocks
+     ["<p><strong>Tröskel</strong> builds agentic software for residential letting agents. Our customers manage between 200 and 4,000 units and are drowning in judgement calls that are individually small and collectively enormous.</p>"
+      "<p>The wedge is <strong>maintenance triage</strong>: an agent reads the tenant's message, checks the lease, checks the [[Repair Priority Matrix]], and either books a contractor or escalates. Everything else we do grows from earning trust on that one loop.</p>"
+      "<p>Start here: [[How We Work]] · [[Product Principles]] · [[Repair Priority Matrix]] · [[Escalation Policy]]</p>"
+      "<p><strong>Stage:</strong> seed · <strong>Team:</strong> 11 · <strong>HQ:</strong> Gothenburg</p>"]}
+
+    {:title "How We Work"
+     :at "2026-03-02T10:00:00Z"
+     :blocks
+     ["<p>Three habits, in priority order.</p>"
+      "<p><strong>1. Write the policy down before automating it.</strong> An agent that follows an unwritten rule is guessing. If a decision cannot be stated as a page in this handbook, it is not ready to be delegated — see [[Repair Priority Matrix]] for the shape we aim at.</p>"
+      "<p><strong>2. Propose, then merge.</strong> Agents do not write to shared knowledge directly. They open a proposal; a human accepts it. See [[Proposal Review]].</p>"
+      "<p><strong>3. Escalate early and cheaply.</strong> A wrong escalation costs a minute. A wrong autonomous decision costs a tenancy. [[Escalation Policy]].</p>"]}
+
+    {:title "Product Principles"
+     :at "2026-03-03T09:30:00Z"
+     :blocks
+     ["<p><strong>The agent must be able to show its work.</strong> Every automated decision links to the policy page it applied and the ledger entry it read. If we cannot explain a decision to a landlord, we do not ship it.</p>"
+      "<p><strong>Never act on money without a human.</strong> Deposit deductions, rent adjustments and contractor payments over the threshold in [[Spend Authority]] always route to a person.</p>"
+      "<p><strong>Prefer boring, checkable behaviour.</strong> A predictable agent that escalates too often beats a clever one that surprises. See [[Escalation Policy]].</p>"]}
+
+    {:title "Repair Priority Matrix"
+     :at "2026-03-04T11:00:00Z"
+     :blocks
+     ["<p>The core triage table. Agents apply this before booking any contractor; anything not covered escalates under [[Escalation Policy]].</p>"
+      "<p><strong>P1 — same day.</strong> No heat below 5°C outside, no hot water, no working toilet in a single-bathroom unit, water ingress, gas smell, failed lock on an external door, anything the tenant describes as unsafe.</p>"
+      "<p><strong>P2 — within 3 working days.</strong> Single appliance failure, intermittent heating, minor leak contained by a bucket, one of several bathrooms out of service.</p>"
+      "<p><strong>P3 — within 20 working days.</strong> Cosmetic damage, slow drainage, worn fittings, non-urgent decorating.</p>"
+      "<p>Gas smell and electrical burning smell are <strong>never</strong> P2 regardless of tenant tone. See [[Gas and Electrical Incidents]].</p>"
+      "<p>Cost thresholds are in [[Spend Authority]]. Contractor selection is in [[Contractor Panel]].</p>"]}
+
+    {:title "Gas and Electrical Incidents"
+     :at "2026-03-04T11:30:00Z"
+     :blocks
+     ["<p>Absolute rules. No agent discretion, no exceptions, no cost threshold.</p>"
+      "<p><strong>Reported gas smell:</strong> instruct the tenant to leave the property, not to touch switches, and to call the national gas emergency line. Then notify the landlord and log the incident. Book a Gas Safe engineer only after the emergency service has attended.</p>"
+      "<p><strong>Burning smell or visible arcing:</strong> instruct the tenant to isolate at the consumer unit if safe, otherwise leave. Book a qualified electrician same-day under P1 in [[Repair Priority Matrix]].</p>"
+      "<p>Both cases are automatically reportable under [[Compliance Calendar]].</p>"]}
+
+    {:title "Escalation Policy"
+     :at "2026-03-05T09:00:00Z"
+     :blocks
+     ["<p>Escalate to a human whenever any of the following is true.</p>"
+      "<p>The tenant is distressed, threatening legal action, or mentions a vulnerable occupant (child under 5, elderly, disabled, pregnant).</p>"
+      "<p>Money is involved beyond the agent's authority in [[Spend Authority]].</p>"
+      "<p>The lease says something the handbook does not cover, or the two disagree — see [[Lease Clause Library]].</p>"
+      "<p>The same issue has been reported twice in 30 days. A repeat is a signal the first fix failed.</p>"
+      "<p>Escalation is not failure. [[Product Principles]] treats an over-escalating agent as correct and a surprising one as broken.</p>"]}
+
+    {:title "Spend Authority"
+     :at "2026-03-05T10:00:00Z"
+     :blocks
+     ["<p>What an agent may commit without a human, per incident.</p>"
+      "<p><strong>Up to 2 000 SEK</strong> — book a panel contractor from [[Contractor Panel]] without approval, provided the work is P1 or P2 in [[Repair Priority Matrix]].</p>"
+      "<p><strong>2 000 – 10 000 SEK</strong> — needs the property manager's approval in the room. The agent prepares the quote comparison; a human presses the button.</p>"
+      "<p><strong>Above 10 000 SEK</strong> — needs landlord approval in writing, and the request must state the consequence of not doing the work.</p>"
+      "<p>Deposit deductions are never automatic at any value. See [[Deposit Returns]].</p>"]}
+
+    {:title "Contractor Panel"
+     :at "2026-03-06T09:00:00Z"
+     :blocks
+     ["<p>Approved contractors, by trade and region. Agents book from this list only; anyone else needs approval under [[Spend Authority]].</p>"
+      "<p><strong>Plumbing — Göteborg:</strong> Nordvik Rör (P1 capable, 2h response), Lindqvist VVS (P2/P3, cheaper).</p>"
+      "<p><strong>Electrical — Göteborg:</strong> Sahlin El (Gas Safe equivalent certified, P1), Öberg Elektriska (P2/P3).</p>"
+      "<p><strong>Heating — all regions:</strong> Värmepartner AB, contracted SLA of 8 hours for total heat loss.</p>"
+      "<p><strong>Locks — all regions:</strong> Låsteam Väst, 24h call-out.</p>"
+      "<p>Panel review is quarterly; see [[Compliance Calendar]]. Removal criteria are in [[Contractor Performance]].</p>"]}
+
+    {:title "Contractor Performance"
+     :at "2026-03-06T10:00:00Z"
+     :blocks
+     ["<p>A contractor leaves the panel in [[Contractor Panel]] if any of the following holds over a rolling quarter.</p>"
+      "<p>More than 10% of jobs require a return visit for the same fault.</p>"
+      "<p>Median response time exceeds the agreed SLA by more than 50%.</p>"
+      "<p>Any safety finding, or any invoice materially above the accepted quote without prior written agreement.</p>"
+      "<p>Two or more tenant complaints about conduct.</p>"]}
+
+    {:title "Lease Clause Library"
+     :at "2026-03-09T09:00:00Z"
+     :blocks
+     ["<p>Standard clauses and what they mean operationally. When a lease and the handbook disagree, <strong>the lease wins</strong> and the case escalates under [[Escalation Policy]].</p>"
+      "<p><strong>Repair responsibility:</strong> landlord holds structure, installations, heating and hot water. Tenant holds their own appliances, light bulbs, and damage beyond fair wear.</p>"
+      "<p><strong>Access:</strong> 24 hours' written notice except in an emergency as defined in [[Repair Priority Matrix]] P1.</p>"
+      "<p><strong>Pets:</strong> written consent required, not unreasonably withheld; consent is per animal, not blanket.</p>"
+      "<p><strong>Subletting:</strong> prohibited without consent. Suspected subletting escalates immediately — never handled by an agent.</p>"]}
+
+    {:title "Deposit Returns"
+     :at "2026-03-09T11:00:00Z"
+     :blocks
+     ["<p>Deposits are the single largest source of disputes, so the process is deliberately slow and human.</p>"
+      "<p>Agents may prepare a deduction proposal: line items, evidence from the check-out report, and the matching clause from [[Lease Clause Library]]. They may not send it.</p>"
+      "<p>A deduction must distinguish <strong>damage</strong> from <strong>fair wear and tear</strong>. Age of the item matters: a 7-year-old carpet cannot be charged at replacement cost.</p>"
+      "<p>Disputed deductions go to the deposit scheme. Our internal target is that fewer than 5% of returns reach dispute — tracked in [[Operating Metrics]].</p>"]}
+
+    {:title "Compliance Calendar"
+     :at "2026-03-10T09:00:00Z"
+     :blocks
+     ["<p>Recurring statutory obligations. Missing one is the failure mode that ends a letting agency, so these are scheduled rather than remembered.</p>"
+      "<p><strong>Annual:</strong> gas safety inspection per property, boiler service, smoke alarm test at tenancy start and annually.</p>"
+      "<p><strong>Five-yearly:</strong> electrical installation condition report (EICR).</p>"
+      "<p><strong>Ten-yearly:</strong> energy performance certificate.</p>"
+      "<p><strong>Per tenancy:</strong> deposit protected within statutory window, inventory completed before move-in, right-to-rent check recorded.</p>"
+      "<p>Incidents under [[Gas and Electrical Incidents]] are reportable regardless of schedule.</p>"]}
+
+    {:title "Proposal Review"
+     :at "2026-03-11T09:00:00Z"
+     :blocks
+     ["<p>Agents never write to this handbook directly. They open a <strong>proposal</strong> — a branch of the knowledge base — and a human accepts or dismisses it.</p>"
+      "<p>The reviewer sees a summary of what changed and can expand into the exact blocks added, edited or removed. Trunk is untouched until Accept.</p>"
+      "<p>When you dismiss, say why. The reason trains the reviewing agent on what this company considers a good change, and it cannot be reconstructed later.</p>"
+      "<p>Related: [[How We Work]], [[Product Principles]].</p>"]}
+
+    {:title "Operating Metrics"
+     :at "2026-03-12T09:00:00Z"
+     :blocks
+     ["<p>What we watch weekly. Definitions matter more than the numbers — an unstable definition makes a trend meaningless.</p>"
+      {:html "<p>Maintenance tickets resolved without human involvement, by priority tier.</p>"
+       :viz {:$schema "<p>https://vega.github.io/schema/vega-lite/v5.json</p>"
+             :description "Autonomous resolution rate by priority"
+             :data {:values [{:tier "P1" :autonomous 12 :escalated 88}
+                             {:tier "P2" :autonomous 61 :escalated 39}
+                             {:tier "P3" :autonomous 83 :escalated 17}]}
+             :transform [{:fold ["autonomous" "escalated"]}]
+             :mark "bar"
+             :encoding {:x {:field "tier" :type "nominal" :axis {:labelAngle 0}}
+                        :y {:field "value" :type "quantitative" :stack "normalize"
+                            :axis {:title "share of tickets"}}
+                        :color {:field "key" :type "nominal" :title "handling"}}}}
+      "<p><strong>Time to first response</strong> — tenant message to any substantive reply. Target under 15 minutes at all hours.</p>"
+      "<p><strong>Repeat rate</strong> — same fault reported again within 30 days. Feeds [[Contractor Performance]].</p>"
+      "<p><strong>Deposit dispute rate</strong> — see [[Deposit Returns]]. Target under 5%.</p>"]}
+
+    {:title "Onboarding a New Agency"
+     :at "2026-03-13T09:00:00Z"
+     :blocks
+     ["<p>The first two weeks decide whether a customer stays, because the agent is only as good as the policy it was given.</p>"
+      "<p><strong>Week 1:</strong> import the portfolio, map their existing priority tiers onto [[Repair Priority Matrix]], and record every place they disagree with our defaults. Disagreements are the valuable part.</p>"
+      "<p><strong>Week 2:</strong> shadow mode — the agent drafts every response but sends nothing. The property manager reviews and corrects. Corrections become proposals under [[Proposal Review]].</p>"
+      "<p>Go-live is when the manager stops correcting P3 drafts, not when the calendar says so.</p>"]}
+
+    {:title "Support Playbook"
+     :at "2026-03-16T09:00:00Z"
+     :blocks
+     ["<p>How we answer customers when the agent got something wrong.</p>"
+      "<p><strong>Acknowledge the specific decision</strong>, not the category. \"The agent booked a P2 for your boiler when it should have been P1\" beats \"sorry about the issue\".</p>"
+      "<p><strong>Show the policy it applied.</strong> Every automated decision links to a handbook page. If the page was wrong, fix the page and say so — that is a proposal, see [[Proposal Review]].</p>"
+      "<p><strong>Never blame the model.</strong> The model is our choice. The policy is our responsibility.</p>"]}
+
+    {:title "Pricing"
+     :at "2026-03-17T09:00:00Z"
+     :blocks
+     ["<p>Per unit under management, billed monthly, no setup fee.</p>"
+      "<p><strong>Core</strong> — 29 SEK/unit/month. Maintenance triage, tenant messaging, [[Compliance Calendar]] tracking.</p>"
+      "<p><strong>Full</strong> — 49 SEK/unit/month. Adds rent reconciliation, [[Deposit Returns]] preparation, and landlord reporting.</p>"
+      "<p>Below 200 units we quote a flat 6 000 SEK/month — smaller portfolios cost us the same to onboard.</p>"
+      "<p>We do not charge per message or per resolved ticket. Charging per agent action rewards a chatty agent, which is the opposite of [[Product Principles]].</p>"]}
+
+    {:title "Competitive Landscape"
+     :at "2026-03-18T09:00:00Z"
+     :blocks
+     ["<p>Three kinds of competitor, and the honest read on each.</p>"
+      "<p><strong>Incumbent property management suites.</strong> Own the system of record and the customer relationship. Slow to ship anything agentic. We win on the triage loop and lose on breadth — so we integrate rather than replace.</p>"
+      "<p><strong>Generic AI support tools.</strong> Fast, cheap, and unaware of the lease. They cannot apply [[Repair Priority Matrix]] because they cannot read the tenancy. We win wherever a decision depends on the specific agreement.</p>"
+      "<p><strong>In-house scripts.</strong> Larger agencies build their own. We win on the audit trail and the compliance calendar; we lose when the agency has strong engineering and unusual processes.</p>"]}
+
+    {:title "Security and Data"
+     :at "2026-03-19T09:00:00Z"
+     :blocks
+     ["<p>We hold tenancy agreements, contact details, and payment history. That is regulated personal data and we treat it as such.</p>"
+      "<p><strong>Tenant data never leaves the customer's workspace.</strong> Cross-customer learning happens on policy pages, never on tenant records.</p>"
+      "<p><strong>Every automated action is attributable</strong> — which agent, which policy version, which ledger entry. See [[Product Principles]].</p>"
+      "<p><strong>Retention:</strong> tenancy records for the statutory period after the tenancy ends, messages for 24 months, then deletion.</p>"]}
+
+    {:title "Glossary"
+     :at "2026-03-20T09:00:00Z"
+     :blocks
+     ["<p><strong>Unit</strong> — one lettable dwelling. Our billing unit, see [[Pricing]].</p>"
+      "<p><strong>Portfolio</strong> — all units under one agency.</p>"
+      "<p><strong>Check-out report</strong> — the condition record at tenancy end; the evidence base for [[Deposit Returns]].</p>"
+      "<p><strong>Shadow mode</strong> — the agent drafts but does not send. See [[Onboarding a New Agency]].</p>"
+      "<p><strong>Panel</strong> — the approved contractor list, [[Contractor Panel]].</p>"]}]}
+
+  {:name "Operations Playbook"
+   :pages
+   [{:title "Operations Playbook"
+     :at "2026-04-01T09:00:00Z"
+     :blocks
+     ["<p>Runbooks for the recurring operational situations. The handbook says what our policy is; this says what to actually do, step by step.</p>"
+      "<p>[[Tenant Reports No Heat]] · [[Tenant Reports a Leak]] · [[Rent Has Not Cleared]] · [[Move-Out Checklist]] · [[Suspected Subletting]]</p>"]}
+
+    {:title "Tenant Reports No Heat"
+     :at "2026-04-01T10:00:00Z"
+     :blocks
+     ["<p>The single most common P1. Most cases are not a broken boiler.</p>"
+      "<p><strong>1.</strong> Ask three questions before booking anything: is there hot water, is the thermostat calling for heat, and is the boiler showing a fault code.</p>"
+      "<p><strong>2.</strong> Hot water present but no heating usually means a thermostat or a diverter valve, which is P2 unless the outside temperature is below 5°C.</p>"
+      "<p><strong>3.</strong> No heat and no hot water below 5°C outside is P1 under [[Repair Priority Matrix]]. Book Värmepartner AB from [[Contractor Panel]] and offer temporary heaters.</p>"
+      "<p><strong>4.</strong> If the occupant is elderly, very young or unwell, escalate regardless of tier — [[Escalation Policy]].</p>"]}
+
+    {:title "Tenant Reports a Leak"
+     :at "2026-04-02T09:00:00Z"
+     :blocks
+     ["<p>Water damage compounds, so the priority is containment before diagnosis.</p>"
+      "<p><strong>1.</strong> Establish whether the water is clean, grey or from the ceiling. Ceiling water means the flat above is involved and both tenancies are affected.</p>"
+      "<p><strong>2.</strong> Tell the tenant where their stopcock is. If we do not know, that is a gap in the property record and should be recorded.</p>"
+      "<p><strong>3.</strong> Contained and clean is P2. Uncontained, or any ceiling ingress, or anything near a consumer unit, is P1 — and near electrics also triggers [[Gas and Electrical Incidents]].</p>"
+      "<p><strong>4.</strong> Photograph before drying. Insurance claims fail without a before.</p>"]}
+
+    {:title "Rent Has Not Cleared"
+     :at "2026-04-03T09:00:00Z"
+     :blocks
+     ["<p>Arrears handling is where an over-eager agent does real harm. Tone is the whole job.</p>"
+      "<p><strong>Day 1–2:</strong> do nothing. Bank timing accounts for most apparent misses. Check the ledger before believing the calendar.</p>"
+      "<p><strong>Day 3:</strong> a single neutral message asking whether the payment was sent. No mention of consequences.</p>"
+      "<p><strong>Day 7:</strong> a human contacts the tenant. Never an agent — by this point the reason usually matters more than the amount.</p>"
+      "<p><strong>Never</strong> reference eviction, credit reporting or debt collection in an automated message under any circumstances.</p>"]}
+
+    {:title "Move-Out Checklist"
+     :at "2026-04-06T09:00:00Z"
+     :blocks
+     ["<p>Everything here exists to make [[Deposit Returns]] defensible.</p>"
+      "<p>Confirm the notice was valid and record the agreed end date.</p>"
+      "<p>Book the check-out inspection within 48 hours of the end date, while the property is still empty and undecorated.</p>"
+      "<p>Photograph every room against the move-in inventory, at the same angles. Mismatched angles lose disputes.</p>"
+      "<p>Take meter readings and final readings for utilities; record the forwarding address.</p>"
+      "<p>Prepare, but do not send, the deduction proposal. A human sends it.</p>"]}
+
+    {:title "Suspected Subletting"
+     :at "2026-04-07T09:00:00Z"
+     :blocks
+     ["<p>Never handled by an agent. This runbook exists so the agent recognises it and stops.</p>"
+      "<p>Signals: post for unknown names, the tenant unreachable while the property is clearly occupied, listings matching the address, utilities far above the pattern for the unit size.</p>"
+      "<p>The agent's only action is to flag it to the property manager with the evidence, and to take no action that alerts the occupant.</p>"
+      "<p>Accusing a tenant wrongly is worse than a month of unnoticed subletting. See [[Escalation Policy]] and [[Lease Clause Library]].</p>"]}]}]
+
+ ;; Conversations that already happened. `:me` is the workspace owner; `:agent`
+ ;; resolves to the resident agent, which simmis mints per room, so it cannot be
+ ;; named by handle here.
+ ;;
+ ;; CONTENT FORMAT DIFFERS BY SPEAKER, because the renderer does: chat.cljc
+ ;; renders agent messages as MARKDOWN and human messages as rich text. Human
+ ;; lines are therefore plain, agent lines markdown — HTML in a human line shows
+ ;; up as literal tags on screen.
+ ;;
+ ;; Both threads are written so the WIKI is load-bearing: the answers live in
+ ;; the handbook, and the conversation shows someone reaching them. A demo
+ ;; where the chat is self-contained proves nothing about the substrate.
+ :rooms
+ [{:name "Ops — Maintenance"
+   ;; A real member of the room, minted through the same create-agent! +
+   ;; add-party! path the "add agent" button uses — not just a name in the
+   ;; transcript. Without this a room's only party is its owner, and asking
+   ;; anything gets no reply because nothing is in there to answer.
+   :agent {:name "Vár"
+           :system-prompt "You are Vár, the operations secretary for Tröskel, a Swedish letting-agency SaaS. You handle tenant maintenance reports for the properties the team manages. You know the handbook — escalation policy, spend authority, the repair priority matrix, the contractor panel — and you follow it. When a change to the handbook is warranted, file a proposal rather than editing it directly. Money moves through the room's book. Be brief and concrete: a property manager reading you at 7am wants the decision, not the reasoning."}
+   :kind :project
+   :attach-kbs ["Tröskel Handbook" "Operations Playbook"]
+   :attach-drives ["Legal & Compliance" "Finance"]
+   :messages
+   [{:from :me :at "2026-07-14T08:12:00Z"
+     :text "Tenant at Lindholmen 12B says the radiators are cold but the hot water is fine. Outside it's about 3°C. What tier is that?"}
+    {:from :agent :at "2026-07-14T08:12:40Z"
+     :text "Hot water present with no heating usually points at the thermostat or a diverter valve, which *Tenant Reports No Heat* puts at P2 — **except** below 5°C outside, and you're at 3°C. So this is P1, same day.\n\nVärmepartner AB is the panel contractor for total heat loss with an 8-hour SLA. That's inside the 2 000 SEK band in *Spend Authority*, so I can book it without approval. Shall I, and offer temporary heaters?"}
+    {:from :me :at "2026-07-14T08:15:10Z"
+     :text "Yes, book it. Also — same flat had a gas smell reported back in March, does that change anything?"}
+    {:from :agent :at "2026-07-14T08:16:02Z"
+     :text "It does, but not for the tier. The incident log has Lindholmen 12B twice: 14 Jan (no leak found) and 22 Mar (loose fitting on the hob, corrected). Two gas reports at one property inside a quarter is the pattern *Incident Log* warns about — repeated false alarms usually mean something nobody has found yet.\n\nBooked the heating call-out. I'd also flag the gas history to the landlord and ask for an early safety check rather than waiting for the annual date. That's your call, not mine — it's a landlord cost."}
+    {:from :me :at "2026-07-14T08:19:33Z"
+     :text "Agreed, flag it. Good catch."}]}
+
+  {:name "Product — Triage Quality"
+   :agent {:name "Vár"
+           :system-prompt "You are Vár, working with Tröskel's product team on how well the maintenance agents triage incoming reports. Look for patterns across incidents rather than handling them one at a time."}
+   :kind :project
+   :attach-kbs ["Tröskel Handbook"]
+   :messages
+   [{:from :me :at "2026-07-20T10:02:00Z"
+     :text "Autonomous resolution on P2 is sitting at 61%. I want it higher before we talk to investors. Where's the loss?"}
+    {:from :agent :at "2026-07-20T10:03:15Z"
+     :text "Careful what we optimise. *Product Principles* says a predictable agent that escalates too often beats a clever one that surprises — so the number going up is only good if the escalations we remove were unnecessary ones.\n\nLooking at the escalation reasons, the largest bucket isn't judgement at all: it's cases where the lease and the handbook disagree, which *Escalation Policy* mandates escalating. Those are correct escalations and shouldn't be removed."}
+    {:from :me :at "2026-07-20T10:06:40Z"
+     :text "So what would you change?"}
+    {:from :agent :at "2026-07-20T10:08:20Z"
+     :text "Two things, neither of them the model.\n\nFirst, *Repair Priority Matrix* doesn't cover appliances the tenant owns versus the landlord's — that distinction is in *Lease Clause Library* but not in the triage table, so every case round-trips. Writing it into the matrix converts a class of escalation into a decision.\n\nSecond, the 2 000 SEK band in *Spend Authority* was set a year ago. A fair number of P2 jobs now quote just over it and escalate purely on price, not on risk.\n\nBoth are policy changes, not model changes. I can open a proposal for the first one — it's a handbook edit and you'd review the diff before it lands."}
+    {:from :me :at "2026-07-20T10:11:05Z"
+     :text "Do the first. Leave the spend threshold, that one needs the founders."}]}]
+
+ :drives
+ [{:name "Finance"
+   :files
+   [{:path "2026/q1-summary.md"
+     :content "# Tröskel — Q1 2026\n\nARR 2 480 000 SEK, up 22% QoQ.\nUnits under management: 41 200 across 19 agencies.\nNet revenue retention: 114%.\n\n## Notes\n\nGrowth is almost entirely expansion within existing agencies rather than new\nlogos. Two agencies moved Core -> Full after the deposit-preparation feature\nshipped, which is the clearest signal so far that the compliance work is what\nthey actually pay for.\n\nCAC payback sits at 11 months, which is acceptable at this stage but is\nflattered by two unusually large agencies onboarded in January.\n"}
+    {:path "2026/pricing-model.md"
+     :content "# Pricing model\n\nPer unit per month, billed monthly. See the Pricing page in the handbook.\n\n| tier | SEK/unit/mo | includes                                   |\n|------|-------------|--------------------------------------------|\n| Core | 29          | triage, messaging, compliance calendar      |\n| Full | 49          | + rent reconciliation, deposits, reporting  |\n\nFloor of 6 000 SEK/month below 200 units.\n\n## Why not per action\n\nCharging per agent action rewards a chatty agent. Our whole quality argument\nis that a good agent escalates rather than improvises, and we should not price\nagainst our own principle.\n"}
+    {:path "2026/runway.md"
+     :content "# Runway\n\nCash 14 200 000 SEK. Net burn 780 000 SEK/month. 18 months at current burn.\n\nTwo hires planned (one backend, one customer success) taking burn to roughly\n980 000 SEK/month from Q3, giving about 13 months from the end of Q2.\n\nWe do not intend to raise before demonstrating that autonomous P2 resolution\nholds above 60% across more than three agencies.\n"}]}
+
+  {:name "Legal & Compliance"
+   :files
+   [{:path "templates/tenancy-agreement.md"
+     :content "# Standard tenancy agreement (template)\n\nTemplate only. The executed agreement for any given tenancy governs, and where\nit differs from this template the executed version wins.\n\n## 4. Repairs\n\nThe landlord shall keep in repair the structure and exterior of the property,\nand keep in repair and proper working order the installations for the supply of\nwater, gas, electricity, sanitation, space heating and heating water.\n\n## 7. Access\n\nThe landlord may enter on 24 hours' written notice at reasonable times, save in\nan emergency where entry may be immediate.\n\n## 11. Subletting\n\nThe tenant shall not sublet or part with possession of the whole or any part of\nthe property without the landlord's prior written consent.\n"}
+    {:path "templates/check-out-report.md"
+     :content "# Check-out report (template)\n\nComplete within 48 hours of the tenancy end date, with the property empty.\n\nFor each room record: floor, walls, ceiling, windows, fixtures, cleanliness.\nPhotograph at the SAME angles as the move-in inventory — mismatched angles are\nthe most common reason a deduction fails at dispute.\n\nMeter readings: electricity, gas, water.\nKeys returned: count and type.\nForwarding address:\n\n## Fair wear and tear\n\nAge and expected life of the item must be stated for any deduction. A carpet at\nseven years of a ten-year expected life cannot be charged at replacement cost.\n"}
+    {:path "compliance/gas-safety-schedule.md"
+     :content "# Gas safety — annual schedule\n\nEvery property with a gas appliance requires an annual safety check by a\nregistered engineer, and a record supplied to the tenant within 28 days.\n\nA lapsed certificate is not a paperwork problem. It invalidates parts of the\nlandlord's position and, in the worst case, is the difference between an\nincident and a fatality.\n\nThe compliance calendar drives this. No property should ever reach the\nexpiry date without a booked appointment.\n"}
+    {:path "compliance/incident-log.md"
+     :content "# Incident log\n\nEvery gas or electrical incident is recorded here regardless of outcome,\nincluding false alarms. False alarms are useful: a property that generates\nrepeated false gas alarms usually has a real problem nobody has found.\n\n| date       | property        | type       | outcome                        |\n|------------|-----------------|------------|--------------------------------|\n| 2026-01-14 | Lindholmen 12B  | gas smell  | no leak found, tenant reassured |\n| 2026-02-03 | Majorna 4A      | burning    | failed socket replaced, EICR ok |\n| 2026-03-22 | Lindholmen 12B  | gas smell  | loose fitting on hob, corrected |\n"}]}]
+
+ ;; A proposal already waiting for review, so the review surface has something
+ ;; real in it on a fresh seed rather than an empty inbox.
+ ;;
+ ;; It ADDS a page, EDITS a clause, and RETRACTS one. The retraction is the
+ ;; point: an all-additions proposal never demonstrates that withdrawing
+ ;; something propagates through review the way adding it does, and withdrawal
+ ;; is the harder half — it is what makes a wiki maintainable rather than
+ ;; merely append-only.
+ :proposals
+ [{:title "Tighten escalation for repeat cold-heat reports"
+   :summary "Adds a heating-specific escalation page, raises the repeat window
+             from 30 to 60 days, and retires the clause that told agents to
+             treat escalation as never being a failure — it was read as
+             permission to escalate everything."
+   :kb "Tröskel Handbook"
+   :room "Ops — Maintenance"
+   :new-pages
+   [{:title "Heating Escalation"
+     :at "2026-03-28T08:30:00Z"
+     :blocks
+     ["<p>Heat is not like other repairs: a cold flat in a Gothenburg winter is a habitability question, not a comfort one, so the clock starts colder and runs faster.</p>"
+      "<p>Below 18 °C measured in the living room, treat as P1 in [[Repair Priority Matrix]] regardless of the tenant's tone. Do not wait for the tenant to escalate — most will not.</p>"
+      "<p>Book a panel contractor from [[Contractor Panel]] the same day, within the P1 limit in [[Spend Authority]]. If none is available, escalate rather than schedule for the next day.</p>"
+      "<p>A second cold-heat report on the same unit within 60 days goes to a human immediately, per [[Escalation Policy]]. The first fix failed and the second call is not a repeat of the first — it is evidence.</p>"]}]
+   :edits
+   [{:page "Escalation Policy"
+     :at "2026-03-28T08:40:00Z"
+     ;; the 30-day repeat window was too short for heating, which is seasonal
+     :edit-block {:index 4
+                  :html "<p>The same issue has been reported twice in 60 days. A repeat is a signal the first fix failed — and for heating, a 30-day window missed the pattern entirely, because a cold snap and its recurrence are rarely a month apart.</p>"}
+     ;; retires the clause that made over-escalation costless
+     :remove-block 5}]}]
+
+ ;; Money that actually moved, in the currency the company actually uses.
+ ;; `starter-book` seeds USD so kontor's verbs are reachable at all; a Swedish
+ ;; letting agency keeping its ledger in dollars would be a small lie told in
+ ;; the one view whose whole job is being exact.
+ ;;
+ ;; Posted through `kontor.book/entry!` against the GOVERNED book, so the
+ ;; balance invariant is enforced here exactly as it is for an agent.
+ ;;
+ ;; Journals are named by TYPE, never by code. A code is a tenant's naming
+ ;; choice — this room's cash journal is `CR`, a survivor of the old CR/CD pair
+ ;; — while the type is what `kontor.book` resolves a verb against. Hardcoding
+ ;; "CSH" here made two of six entries fail against a book that had a perfectly
+ ;; good cash journal under another name.
+ :books
+ [{:room "Ops — Maintenance"
+   :commodity {:symbol "SEK" :name "Swedish krona" :precision 2}
+   :entries
+   [{:at "2026-03-01T08:00:00Z"
+     :narration "Opening float — maintenance account"
+     :debit "Assets:Bank" :credit "Equity:Opening" :amount 40000 :journal-type :general}
+    {:at "2026-03-06T14:20:00Z"
+     :narration "Nordström VVS — emergency call-out, Lindholmen 12B hob fitting"
+     :debit "Expenses:General" :credit "Liabilities:Payable" :amount 1850 :journal-type :purchase}
+    {:at "2026-03-09T09:15:00Z"
+     :narration "Paid Nordström VVS invoice 2026-0412"
+     :debit "Liabilities:Payable" :credit "Assets:Bank" :amount 1850 :journal-type :cash}
+    {:at "2026-03-14T11:00:00Z"
+     :narration "March management fees — Lindholmen portfolio"
+     :debit "Assets:Receivable" :credit "Income:Sales" :amount 18500 :journal-type :sale}
+    {:at "2026-03-20T16:45:00Z"
+     :narration "Göteborg Elservice — EICR remediation, Majorna 4A socket"
+     :debit "Expenses:General" :credit "Liabilities:Payable" :amount 4200 :journal-type :purchase}
+    {:at "2026-03-25T10:30:00Z"
+     :narration "Received March fees from Lindholmen Fastigheter AB"
+     :debit "Assets:Bank" :credit "Assets:Receivable" :amount 18500 :journal-type :cash}]}]}

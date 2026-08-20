@@ -1,0 +1,60 @@
+(ns is.simm.model.mail-credentials
+  "Server-only encryption for mail connection secrets.
+
+   The browser only receives `:credentials-configured?`; passwords and the
+   encrypted payload never cross a remote boundary. Production should set
+   SIMMIS_CREDENTIAL_KEY to a base64url-encoded 32-byte key. Local development
+   gets a persistent key in .dvergr/mail-credential-key."
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            [org.replikativ.geheimnis.aead :as aead]
+            [org.replikativ.geheimnis.codec :as codec]
+            [org.replikativ.geheimnis.core :as geheimnis]
+            [taoensso.telemere :as log]))
+
+(def ^:private key-size 32)
+(def ^:private nonce-size 12)
+
+(defn- key-file [] (java.io.File. ".dvergr/mail-credential-key"))
+
+(defn- load-key []
+  (let [encoded (or (some-> (System/getenv "SIMMIS_CREDENTIAL_KEY") str/trim not-empty)
+                    (let [f (key-file)]
+                      (if (.exists f)
+                        (str/trim (slurp f))
+                        (let [value (codec/bytes->b64url
+                                     (geheimnis/random-bytes key-size))]
+                          (.mkdirs (.getParentFile (.getAbsoluteFile f)))
+                          (spit f value)
+                          (log/log! {:level :warn
+                                     :id ::dev-credential-key-created
+                                     :msg "Generated a local mail credential key; set SIMMIS_CREDENTIAL_KEY in production"})
+                          value))))
+        key (codec/b64url->bytes encoded)]
+    (when-not (= key-size (alength key))
+      (throw (ex-info "SIMMIS_CREDENTIAL_KEY must decode to exactly 32 bytes"
+                      {:decoded-bytes (alength key)})))
+    key))
+
+(defonce ^:private master-key (delay (load-key)))
+
+(defn encrypt
+  "Encrypt an EDN-safe value for `account-id`. Returns registry-safe strings."
+  [account-id value]
+  (let [nonce (geheimnis/random-bytes nonce-size)
+        aad (codec/str->bytes (str "simmis/mail-account/" account-id))
+        plaintext (codec/str->bytes (pr-str value))
+        ciphertext (aead/aead-encrypt-sync @master-key nonce aad plaintext)]
+    {:nonce (codec/bytes->b64url nonce)
+     :ciphertext (codec/bytes->b64url ciphertext)}))
+
+(defn decrypt
+  "Decrypt a value previously returned by `encrypt`."
+  [account-id nonce ciphertext]
+  (let [aad (codec/str->bytes (str "simmis/mail-account/" account-id))]
+    (->> (aead/aead-decrypt-sync @master-key
+                                 (codec/b64url->bytes nonce)
+                                 aad
+                                 (codec/b64url->bytes ciphertext))
+         codec/bytes->str
+         edn/read-string)))

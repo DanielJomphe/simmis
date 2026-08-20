@@ -1,0 +1,25 @@
+{:deps {:aliases [:shadow]}
+ :nrepl {:port 9631}  ;; Enable nREPL for CLJS access via clj-nrepl-eval
+ ;; Non-file requests (e.g. /blobs/<id> — content-addressed media) proxy
+ ;; to the app server, so relative URLs behave like production (where the
+ ;; app server serves everything).
+ :dev-http {8080 {:root "public"
+                  :proxy-url "http://localhost:47295"}}
+ :builds {;; Main app - Spindel-based wiki with delta rendering
+          :app
+          {:target :browser
+           :output-dir "public/js"
+           :asset-path "/js"
+           :modules {:app {:entries [is.simm.uis.web.desktop.main]
+                           :init-fn is.simm.uis.web.desktop.main/init}}
+           :devtools {:repl-init-ns is.simm.uis.web.desktop.main
+                      :before-load is.simm.uis.web.desktop.main/stop!
+                      :after-load is.simm.uis.web.desktop.main/reload!}}
+
+          :block-editor
+          {:target :browser
+           :output-dir "public/js"
+           :asset-path "/js"
+           :modules {:block-editor {:entries [is.simm.uis.web.desktop.block-editor]
+                                    :init-fn is.simm.uis.web.desktop.block-editor/init}}
+           :devtools {:repl-init-ns is.simm.uis.web.desktop.block-editor}}}}

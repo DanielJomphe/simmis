@@ -1,0 +1,363 @@
+{;; Default dependency set: Maven RELEASES, coordinated with dvergr's own pins.
+ ;; This is the set we can run tests against as a stable baseline.
+ ;;
+ ;; For cross-repo development against the up-to-date sibling git checkouts,
+ ;; add the :local alias, e.g.:
+ ;;   clj -M:local:dev     (dev environment on local checkouts)
+ ;;   clj -M:local:test    (tests on local checkouts)
+ ;;
+ ;; Every dependency, dvergr included, resolves from Maven by default. The
+ ;; :stack alias overlays ONLY ../dvergr, for the common case of developing
+ ;; the agent substrate and simmis together.
+ :deps {org.clojure/clojure {:mvn/version "1.12.1"}
+        org.clojure/clojurescript {:mvn/version "1.11.132"}
+
+        ;; Spindel reactive computation system (+ partial-cps used directly).
+        ;; 0.1.35 (#27 lost-wakeup redesign + follow-ups): continuation
+        ;; failures reject the owning spin (supervisors observe them),
+        ;; one-shot waiter handoffs are transactional :cont-resume events,
+        ;; engine-wide fault hook (our pump-watchdog's
+        ;; mult/set-fault-reporter! call now routes ALL engine faults into
+        ;; Telemere). Forks deliver events in ONE world only, undoing
+        ;; in-flight mailbox claims (spindel#30); node-record invariant
+        ;; enforced at field-write sites (spindel#31/#32); pubsub buffers
+        ;; atom-backed, fixing a cross-thread lost-delivery race in the bus
+        ;; topology (spindel#34/#35). 0.1.38 adds: DOM node identity preserved
+        ;; across moves/fragment offsets (#36), SCI contexts locked by default
+        ;; (#37), and R3 — the DOM caches advance on COMMIT, not on compute
+        ;; (#38), which is what stopped a page scrubbed into the past from
+        ;; staying read-only forever after Back to now.
+        ;; UNPINNED at 0.1.40 — the duplication that forced the 0.1.37 pin is
+        ;; gone, structurally rather than by guard. History, because it explains
+        ;; the shape of the fix: 0.1.38's R3 made the caches advance on COMMIT
+        ;; (so an ABANDONED run stopped corrupting the baseline) but removed the
+        ;; accidental dedup that compute-time cache writes had provided, so a
+        ;; REPEATED run duplicated instead. Measured by collapsing+expanding the
+        ;; sidebar Memory section: 0.1.37 held at 9 containers, 0.1.38 went to
+        ;; 15. Neither was correct — one loses updates, the other duplicates.
+        ;;
+        ;; 0.1.39/0.1.40 fix the cause both symptoms shared: state mutated by an
+        ;; execution that does not own it.
+        ;;   #39 R4 — the environment travels with the CONTINUATION, never with
+        ;;       the event (drain context smuggling, restore-by-merge, external
+        ;;       awaits without snapshots), and reconciliation moved to COMMIT
+        ;;       time: builds are pure values, the diff runs once at the device
+        ;;       against the device's committed model, advancing it in the same
+        ;;       step. N racing builds now collapse to one write.
+        ;;   #40 the mounted model is the committed tree; unmount is the
+        ;;       DIFFERENCE between successive committed trees (one owner, one
+        ;;       derivation), replacing the deferred-eviction choreography.
+        ;;       Also: ::addr-collision / ::commit-unbound-addr fail tests.
+        ;; Verified here in Chrome against 0.1.40's tree: Memory toggles
+        ;; (settled and fast), cross-scope page switches, page->room switches —
+        ;; stable at 9 containers, zero duplicate parents, zero warnings.
+        org.replikativ/spindel {:mvn/version "0.1.40"}
+        is.simm/partial-cps {:mvn/version "0.1.60"}
+
+        ;; replikativ substrate
+        ;; datahike RELEASE (was a :git/sha following main). Ships
+        ;; datahike.kabel.* + the secondary-index adapters in the jar. A
+        ;; release is pre-compiled → NO compile-java prep (which a git-sha
+        ;; needs and which was blocking the uberjar). :local still overlays
+        ;; ../datahike for cross-repo dev. datahike 0.8.1744 (#861 tx-preds
+        ;; governed writer + #888 planner get-else var-default + #895 cljs
+        ;; :db.type/bigdec) + konserve 0.9.363 (fress 0.4.317 BIGDEC handlers,
+        ;; matches datahike 0.8.1744's own konserve pin) + konserve-sync 0.1.35
+        ;; + kabel 0.3.100 are the co-designed client-sync correctness set
+        ;; (ordered commit batches, branch head last, no head timestamp-dedup,
+        ;; db exposure gated on the drained handshake) — bump them TOGETHER.
+        ;; NOTE: booting on 0.8.1744 needs the undeclared-attr strictness pass
+        ;; (the newer datahike raises where 0.8.1729 was lenient — e.g. seed
+        ;; entities carrying attrs not yet in the installed schema).
+        org.replikativ/datahike {:mvn/version "0.8.1744"}
+        org.replikativ/konserve {:mvn/version "0.9.363"}
+        org.replikativ/konserve-sync {:mvn/version "0.1.35"}
+        ;; 0.3.104 is a lone bump out of the set above ON PURPOSE. It carries
+        ;; three things, and only the first is why we took it:
+        ;;
+        ;;   #16 — `send-handshake!` ended the handshake on a QUIET item
+        ;;   channel as readily as on a closed one, and 100ms of quiet is what
+        ;;   konserve-sync's producer looks like while it walks a store. The
+        ;;   subscriber was told the handshake completed, so it treated the
+        ;;   prefix it had as the whole store — and datahike's walker emits
+        ;;   branch heads LAST, so truncation dropped exactly the head. That is
+        ;;   the "chats do not open" bug. It does not weaken the co-design's
+        ;;   "db exposure gated on the drained handshake" clause; it is what
+        ;;   makes the handshake actually drain.
+        ;;   #17 — the stall bound measured age since the handshake STARTED,
+        ;;   so a big store on a slow link died on its first quiet gap once the
+        ;;   clock ran out. Now measured since the last batch.
+        ;;   #15 — CBOR wire (frame 14). A new frame type, additive; taken
+        ;;   because there is no release with #16/#17 and without it.
+        ;;
+        ;; 0.3.105 (kabel#18) is the step the note below called separate:
+        ;; `:authorize-publish-fn`, so inbound publishes get their OWN gate
+        ;; instead of reusing the subscribe predicate. It defaults to
+        ;; `:authorize-fn`, so the option is additive and the wire is
+        ;; untouched — another lone bump the "bump together" rule permits.
+        ;; simmis passes `web/data-plane-publish-authorized?`, which refuses
+        ;; every inbound publish: no client here is ever a legitimate
+        ;; publisher (see that fn's docstring).
+        ;;
+        ;; 0.3.101 (kabel#14) was the previous lone bump: it adds an
+        ;; authorization gate to `:pubsub/publish` and touches no
+        ;; sync-protocol semantics, so it does not re-open the co-design the
+        ;; "bump together" rule protects. It DOES change behaviour here —
+        ;; inbound publishes now go through `web/data-plane-authorized?`, which
+        ;; until then gated subscribes only, so any peer that could address a
+        ;; registered topic could write its store. That predicate still asked
+        ;; `can?` for `:read` whatever the operation was, so it closed the hole
+        ;; only to "same check as subscribe" — the residue 0.3.105 finishes.
+        org.replikativ/kabel {:mvn/version "0.3.105"}
+        ;; kontor — double-entry accounting kernel; powers is.simm.model.books
+        ;; (per-room governed double-entry) + the metering→ledger bridge. :local
+        ;; overlays ../kontor for cross-repo dev.
+        ;;
+        ;; 0.1.9, not 0.1.3. Six releases of read-side correctness sit between
+        ;; them — "bitemporal defaults, the ledger axis, and open items that lost
+        ;; half a receivable" (#4), the US statements + an option-forwarding bug
+        ;; (#3), composite tax identity (#5) — and on 0.1.3 a trial balance over
+        ;; a book with real postings came back EMPTY.
+        ;;
+        ;; NOTE for callers: no released kontor has `assert-refs-resolve!`
+        ;; (ADR-124) yet, so an account ref that does not resolve is posted as a
+        ;; NEW empty entity rather than refused — money lands on a phantom
+        ;; account and the verb returns happily. String account paths are also a
+        ;; post-0.1.9 convenience (`->account-ref` does not exist here). Pass
+        ;; explicit lookup refs — `[:kontor.account/path "Assets:Bank"]` — which
+        ;; work on every version, and re-read the balance after posting.
+        org.replikativ/kontor {:mvn/version "0.1.9"}
+        ;; auth folded into kabel as kabel.auth.* (opt-in there); provide its
+        ;; code deps here since we use it. geheimnis is kabel.auth's portable
+        ;; crypto (JWT HS256, token hashing); it needs hasch >= 0.4.100 (raw
+        ;; sha256), so hasch is pinned there to keep the direct dep from
+        ;; shadowing geheimnis's requirement. 0.4.101 additionally carries the
+        ;; InputStream binary coercion geschichte needs to hash blobs without
+        ;; materializing them; it is purely additive — File coercion was
+        ;; refactored onto the same code path and every content address is
+        ;; unchanged (same magics, same split-size branch points).
+        metosin/jsonista {:mvn/version "1.0.0"}
+        buddy/buddy-hashers {:mvn/version "2.0.167"}
+        org.replikativ/geheimnis {:mvn/version "0.2.36"}
+        org.replikativ/hasch {:mvn/version "0.4.101"}
+        org.replikativ/incognito {:mvn/version "0.3.69"}
+        org.replikativ/superv.async {:mvn/version "0.3.50"}
+        ;; 0.3.37, not 0.3.36 — it carries yggdrasil#15, which fixes TWO things
+        ;; simmis depends on and 0.3.36 gets wrong:
+        ;;   • `merge!` selected datoms by raw entity id, so accepting a
+        ;;     proposal could silently orphan the fork's work (branches share
+        ;;     an eid counter after a fork, so the ids mean different things);
+        ;;   • `common-ancestor` passed string parent-ids to `commit-as-db`,
+        ;;     throwing "Commit-id must be a uuid" — which took out `conflicts`,
+        ;;     and with it the proposal tier, the Tasks aggregate and Accept.
+        ;; Both were invisible on `:local` (the checkout had the fix) and only
+        ;; appeared once the dev server moved onto released deps.
+        ;; 0.3.38 adopts the Geschichte adapter as yggdrasil.adapters.geschichte
+        ;; (yggdrasil#16; geschichte dropped its own copy in 0.1.12) and gives it
+        ;; the `p/Mergeable` it never had. Until then a Geschichte system had NO
+        ;; `diff` at all — a room repo fell through to a datom count over
+        ;; Geschichte's internal commit/tree/blob schema — and could not be
+        ;; merged, so accepting a code fork was impossible.
+        ;; 0.3.39 passes geschichte's content-level merge resolver into
+        ;; `plan-trees` (yggdrasil#17, geschichte 0.1.14). Two forks that touched
+        ;; one file in DIFFERENT places no longer conflict — `yp/conflicts`
+        ;; reports only real overlaps and `yp/merge!` lands the rest. JVM only:
+        ;; the planner is synchronous and pure while cljs content IO is
+        ;; partial-cps, so a resolver cannot be awaited inside it; cljs keeps
+        ;; file-level granularity, coarser but never wrong. All simmis merging is
+        ;; server-side, so this reaches every path that matters.
+        org.replikativ/yggdrasil {:mvn/version "0.3.39"}
+        ;; DIRECT, though simmis has no direct geschichte code: it arrives
+        ;; transitively via dvergr, which pins 0.1.12, and yggdrasil 0.3.39's
+        ;; adapter calls `repo/content-merger` — added in 0.1.14. Nearest-wins
+        ;; means this direct entry decides. Without it the adapter fails to
+        ;; COMPILE ("No such var: repo/content-merger"), which is at least
+        ;; loud; drop it again once dvergr's own pin catches up.
+        org.replikativ/geschichte {:mvn/version "0.1.14"}
+        org.replikativ/scriptum {:mvn/version "0.1.27"}
+        org.replikativ/logging {:mvn/version "0.1.3"}
+        org.replikativ/briefkasten {:mvn/version "0.1.3"}
+
+        ;; superficie - Clojure <-> readable syntax transformer
+        org.replikativ/superficie {:mvn/version "0.2.28"}
+
+        ;; rechentafel - pure-Clojure Excel interpreter (parser → per-cell dep
+        ;; graph → dirty-set topological recalc, 412 Excel functions). Backs the
+        ;; `sheet/*` SCI vocabulary: an agent opens an .xlsx as a live MODEL it
+        ;; queries and perturbs, instead of a wall of text it cannot afford to
+        ;; read (doc/document-intake-design.md §1, §2.5).
+        ;;
+        ;; POI is the .xlsx loader (rechentafel.poi) and the save-as! patcher.
+        ;; rechentafel keeps it behind a :poi alias because it is a LIBRARY;
+        ;; simmis is an APPLICATION and is the right layer to pay the dependency
+        ;; cost (design doc §7). Version tracks rechentafel's own :poi alias.
+        ;;
+        ;; poi-ooxml-full (not the -lite that poi-ooxml pulls by default):
+        ;; rechentafel.poi reads Excel TABLES (ListObjects) off the CTTable
+        ;; XMLBeans, and STTableType lives only in -full. Verified the hard way
+        ;; — with -lite alone the loader dies with NoClassDefFoundError. Same
+        ;; set as rechentafel's own :poi alias.
+        org.replikativ/rechentafel {:mvn/version "0.1.5"}
+        org.apache.poi/poi {:mvn/version "5.5.1"}
+        org.apache.poi/poi-ooxml {:mvn/version "5.5.1"}
+        org.apache.poi/poi-ooxml-full {:mvn/version "5.5.1"}
+
+        ;; Markdown-vault intake (Obsidian/logseq/org-roam → KB wiki,
+        ;; doc/wiki-lifecycle-design.md). clj-yaml parses frontmatter (proper
+        ;; YAML, not a hand-rolled reader) — kept as a :local overlay too so we
+        ;; can patch it if a vault trips it up. flexmark is the in-JVM CommonMark
+        ;; parser for the body (no external binary; pandoc is reserved for the
+        ;; org-mode path when we add org-roam).
+        clj-commons/clj-yaml {:mvn/version "1.0.29"}
+        com.vladsch.flexmark/flexmark {:mvn/version "0.64.8"}
+
+        ;; distributed-scope still declares the pre-rename io.replikativ group
+        ;; for hasch/kabel; exclude so only the org.replikativ artifacts (same
+        ;; namespaces) are on the classpath.
+        is.simm/distributed-scope {:mvn/version "0.1.9"
+                                   :exclusions [io.replikativ/hasch
+                                                io.replikativ/kabel]}
+
+        org.babashka/sci {:mvn/version "0.13.52"}
+        metosin/reitit {:mvn/version "0.7.0"}
+
+        ;; nREPL in the BASE deps so the uberjar can serve the opt-in
+        ;; dev-deployment REPL (SIMMIS_NREPL_PORT, 127.0.0.1-bound,
+        ;; SSH-tunnel access only — see web/maybe-start-nrepl!). Off by
+        ;; default; costs nothing when unused.
+        nrepl/nrepl {:mvn/version "1.3.1"}
+
+        ;; dvergr - agentic programming framework. 0.1.43 follows the Geschichte
+        ;; adapter into Yggdrasil (dvergr#46) and takes geschichte 0.1.12 with it
+        ;; — pairing 0.1.10 with yggdrasil 0.3.38 would put TWO GeschichteSystem
+        ;; record types on the classpath. It also carries the sandbox hardening:
+        ;; the sci 0.15.56 interop-escape close (#44), clojure.repl introspecting
+        ;; the SANDBOX rather than the host JVM and a :reload that can no longer
+        ;; swap a shim for the host namespace (#43), and discoverable in-sandbox
+        ;; testing + vocabulary (#45).
+        ;; 0.1.24 had added: the :on-reply
+        ;; turn hook (embedder rewrites an agent's reply + injects learn-back
+        ;; system notes — simmis resolves [[Title]]→[[dh://…]] and nudges toward
+        ;; kb/link, room_agents/make-link-reply-hook); the GLM leaked-tool-name/
+        ;; null-args poison fix (#25 — a leaked envelope, once durable, 400s the
+        ;; room forever); plus GLM tool-channel recovery, embedder-tunable eval
+        ;; timeout, and budget exhaustion that ENDS the turn instead of blocking
+        ;; the shared drain thread.
+        org.replikativ/dvergr {:mvn/version "0.1.43"}}
+ :paths ["src" "resources"]
+ :aliases {;; Local up-to-date git checkouts of the whole stack. Coordinates match
+           ;; the Maven ones exactly so each override REPLACES the release instead
+           ;; of duplicating namespaces on the classpath.
+           :local {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"}
+                                org.replikativ/spindel {:local/root "../spindel"}
+                                is.simm/partial-cps {:local/root "../partial-cps"}
+                                org.replikativ/datahike {:local/root "../datahike"}
+                                org.replikativ/konserve {:local/root "../konserve"}
+                                org.replikativ/konserve-sync {:local/root "../konserve-sync"}
+                                org.replikativ/kabel {:local/root "../kabel"}
+                                org.replikativ/geheimnis {:local/root "../geheimnis"}
+                                org.replikativ/hasch {:local/root "../hasch"}
+                                org.replikativ/incognito {:local/root "../incognito"}
+                                org.replikativ/superv.async {:local/root "../superv.async"}
+                                org.replikativ/yggdrasil {:local/root "../yggdrasil"}
+                                org.replikativ/scriptum {:local/root "../scriptum"}
+                                org.replikativ/logging {:local/root "../logging"}
+                                org.replikativ/briefkasten {:local/root "../briefkasten"}
+                                org.replikativ/superficie {:local/root "../superficie"}
+                                org.replikativ/rechentafel {:local/root "../rechentafel"}
+                                org.replikativ/muschel {:local/root "../muschel"}
+                                ;; local checkout so we can patch clj-yaml if a
+                                ;; vault's frontmatter trips it (release pin above).
+                                clj-commons/clj-yaml {:local/root "../clj-yaml"}
+                                is.simm/distributed-scope {:local/root "../distributed-scope"
+                                                           :exclusions [io.replikativ/hasch
+                                                                        io.replikativ/kabel]}
+                                 org.babashka/sci {:local/root "../sci"}
+                                 ;; ../konserve pins fress 0.4.312, but local
+                                 ;; datahike (8f6d1e43, cljs :db.type/bigdec)
+                                 ;; requires fress.impl.bigdec — 0.4.317 only.
+                                 ;; Without this the CLJS build dies with
+                                 ;; "namespace fress.impl.bigdec is not available".
+                                 com.github.pkpkpk/fress {:mvn/version "0.4.317"}}
+                   ;; Local datahike keeps its kabel-writer client (datahike.kabel.*)
+                   ;; under src-kabel and the secondary-index adapters
+                   ;; (datahike.index.secondary.* — scriptum/proximum/stratum,
+                   ;; required by dvergr.search.secondary) under src-secondary;
+                   ;; neither is on its main :paths (the released jar includes
+                   ;; them, so the Maven set needs no extra paths).
+                   :extra-paths ["../datahike/src-kabel"
+                                 "../datahike/src-secondary"]}
+
+           ;; Focused cross-repo overlay for Briefkasten mail-resource work.
+           ;; Unlike :local, this does not
+           ;; require every replikativ sibling checkout to be present.
+           :mail-dev {:extra-deps {org.replikativ/briefkasten {:local/root "../briefkasten"}}
+                      :extra-paths ["../datahike/src-kabel"
+                                    "../datahike/src-secondary"]}
+
+           ;; Focused overlay for the ONE sibling simmis co-develops with:
+           ;; dvergr. Everything else — datahike, konserve, geschichte,
+           ;; muschel, kontor, persistent-sorted-set — stays on Maven, which
+           ;; is where released work belongs. dvergr itself is released too
+           ;; (0.1.43 above); this alias exists because agent-substrate work
+           ;; and simmis work usually land in the same session.
+           ;;
+           ;; muschel left this alias when 0.2.18 shipped (the Geschichte
+           ;; workspace mount API): dvergr pins it, and `../muschel` was verified
+           ;; content-identical to the 0.2.18 tag, so overlaying it added nothing
+           ;; but a checkout whose branch nobody tracks. `:local` still overrides
+           ;; it for parallel muschel work.
+           ;;
+           ;; Prefer this over :local. :local overlays EVERY replikativ sibling,
+           ;; so classpath resolution inherits whatever branch each checkout
+           ;; happens to sit on; when two siblings disagree on how a shared lib
+           ;; is coordinated (one :local/root, one :mvn/version at equal depth)
+           ;; the CLI cannot compare them and the alias fails outright.
+           :stack {:extra-deps {org.replikativ/dvergr {:local/root "../dvergr"}}}
+
+           ;; Development environment - starts nREPL (47888), shadow-cljs (9631), and web server (47295)
+           :dev {:main-opts ["-e" "(require 'user)"]
+                 :extra-paths ["dev" "test"]
+                 :jvm-opts ["-Djdk.attach.allowAttachSelf"
+                            "-XX:+UnlockDiagnosticVMOptions"
+                            "-XX:+DebugNonSafepoints"
+                            "-XX:+EnableDynamicAgentLoading"
+                            "--enable-native-access=ALL-UNNAMED"]
+                 :extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}
+                              binaryage/devtools {:mvn/version "1.0.7"}
+                              nrepl/nrepl {:mvn/version "1.3.1"}
+                              cider/cider-nrepl {:mvn/version "0.50.2"}
+                              org.clojure/tools.namespace {:mvn/version "1.5.0"}
+                              org.slf4j/slf4j-api {:mvn/version "2.0.17"}
+                              org.slf4j/slf4j-simple {:mvn/version "2.0.17"}
+                              ;; Apache POI drags in log4j-api, which with no
+                              ;; provider prints "Log4j API could not find a
+                              ;; logging provider" as the FIRST line of a cold
+                              ;; start — alarming, and the first thing a new
+                              ;; contributor sees. Route it into the slf4j
+                              ;; already here. :dev only: production has no
+                              ;; slf4j binding, so adding it there would just
+                              ;; trade this warning for SLF4J's own.
+                              org.apache.logging.log4j/log4j-to-slf4j {:mvn/version "2.24.3"}}}
+
+           ;; Standalone web server (no dev tooling)
+           :web-server {:main-opts ["-m" "is.simm.runtimes.web"]}
+
+           ;; Tests
+           :test {:extra-paths ["test"]
+                  :extra-deps {lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+                  :exec-fn kaocha.runner/exec-fn
+                  :exec-args {:skip-meta [:integration]}}
+
+           ;; Classpath for npx-spawned shadow-cljs JVMs (release builds).
+           ;; Deliberately does NOT include the "dev" path: Clojure
+           ;; auto-loads dev/user.clj from the classpath, whose top-level
+           ;; start! would boot a whole dev stack (an :app WATCH that
+           ;; overwrites the release bundle, nREPL, non-daemon threads that
+           ;; keep the "finished" build JVM alive) inside the build process.
+           :shadow {:extra-deps {thheller/shadow-cljs {:mvn/version "2.28.21"}
+                                 binaryage/devtools {:mvn/version "1.0.7"}}}
+
+           ;; Uberjar build (clojure -T:build uber) — see build.clj
+           :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}}
+                   :ns-default build}}}

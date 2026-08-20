@@ -1,0 +1,209 @@
+(ns is.simm.uis.web.desktop.screen-share
+  "Share the local screen — ONE capture, per-room GRANTS
+   (doc/archive/screen-capture-scoping.md).
+
+   getDisplayMedia → hidden <video> → periodic canvas snapshot behind a
+   scene-change gate → POST JPEG to /screen-frames (the caller's OWN stream;
+   identity from the JWT, no room in the path). The server describes each frame
+   with a VLM into the user's per-user buffer; which rooms may see it is decided
+   by GRANTS, not by where it was posted.
+
+   The share button is a GRANT toggle, not a capture switch. There is exactly one
+   getDisplayMedia session: the first room you share into starts it (browser
+   picker); every other room's toggle just opens/closes a grant over that same
+   capture and heartbeats it; turning off the last grant stops the capture. So
+   {personal, R2, R5} can receive your screen at once, and dropping one leaves
+   the others untouched.
+
+   The SAME stream feeds screen-recorder (Track 4e), the archive tier."
+  (:require [is.simm.uis.web.desktop.screen-recorder :as rec]
+            [is.simm.uis.web.desktop.login :as login]
+            [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.runtime :refer [runtime]]
+            [is.simm.runtimes.web :as web]
+            [org.replikativ.spindel.engine.core :as rtc]))
+
+(declare stop-all!)
+
+;; The single capture session: {:stream :video :interval :last-sig :last-post} or nil.
+(defonce ^:private capture (atom nil))
+;; room-id → {:heartbeat interval-id} for every room currently granted.
+(defonce ^:private grants (atom {}))
+
+(def ^:private capture-interval-ms 8000)
+(def ^:private heartbeat-ms 60000)
+(def ^:private grant-beat-ms 10000)  ;; keep the server-side grant window fresh
+(def ^:private diff-threshold 7)     ;; mean abs gray delta (0-255) = a scene change
+
+(defn sharing? [room-id] (contains? @grants room-id))
+(defn any-active? [] (some? @capture))
+
+;; ---------------------------------------------------------------------------
+;; Frame sampling (unchanged) — one video, posted to the user stream
+;; ---------------------------------------------------------------------------
+
+(defn- frame-signature
+  "Tiny grayscale thumbnail as a JS array — cheap frame fingerprint."
+  [video]
+  (let [c (js/document.createElement "canvas")
+        w 32 h 18]
+    (set! (.-width c) w) (set! (.-height c) h)
+    (let [ctx (.getContext c "2d")]
+      (.drawImage ctx video 0 0 w h)
+      (let [d (.-data (.getImageData ctx 0 0 w h))
+            n (* w h)
+            out (js/Array. n)]
+        (dotimes [i n]
+          (aset out i (+ (* 0.3 (aget d (* i 4)))
+                         (* 0.6 (aget d (+ (* i 4) 1)))
+                         (* 0.1 (aget d (+ (* i 4) 2))))))
+        out))))
+
+(defn- mean-abs-diff [a b]
+  (if (or (nil? a) (nil? b))
+    255
+    (let [n (.-length a)]
+      (loop [i 0 acc 0.0]
+        (if (< i n)
+          (recur (inc i) (+ acc (js/Math.abs (- (aget a i) (aget b i)))))
+          (/ acc n))))))
+
+(defn- post-frame! [video]
+  (let [vw (.-videoWidth video) vh (.-videoHeight video)]
+    (when (pos? vw)
+      ;; Scale by AREA, not width: a width cap crushes ultrawide screens below
+      ;; OCR-readability. ~5.5MP keeps an ultrawide near-native (~4400px wide).
+      (let [scale (min 1 (js/Math.sqrt (/ 5500000 (* vw vh))))
+            c (js/document.createElement "canvas")]
+        (set! (.-width c) (js/Math.round (* vw scale)))
+        (set! (.-height c) (js/Math.round (* vh scale)))
+        (.drawImage (.getContext c "2d") video 0 0 (.-width c) (.-height c))
+        (.toBlob c
+                 (fn [blob]
+                   (when blob
+                     (-> (js/fetch "/screen-frames"
+                                   #js {:method "POST"
+                                        ;; identity from the JWT; the frame lands
+                                        ;; in the caller's OWN stream
+                                        :headers (login/auth-header-map
+                                                   #js {"Content-Type" "image/jpeg"})
+                                        :body blob})
+                         (.catch (fn [e] (js/console.warn "[screen-share] post failed:" e))))))
+                 "image/jpeg" 0.85)))))
+
+;; ---------------------------------------------------------------------------
+;; Grants — open/heartbeat/close a room's window onto the running capture
+;; ---------------------------------------------------------------------------
+
+;; Grants are CONTROL-plane, so RPCs over distributed-scope — not HTTP glue.
+;; From a DOM/interval callback the spin-remote needs the execution-context
+;; bound, or it silently no-ops (feedback_spin_remote_ctx_binding).
+(defn- rpc! [rpc-fn room-id]
+  (binding [rtc/*execution-context* runtime]
+    (let [s (rpc-fn web/server-id room-id)]
+      (s (fn [_] nil)
+         (fn [e] (js/console.warn "[screen-share] grant rpc failed:" e))))))
+
+(defn- grant-open!  [room-id] (rpc! chat-remote/open-screen-grant! room-id))
+(defn- grant-beat!  [room-id] (rpc! chat-remote/screen-grant-heartbeat! room-id))
+(defn- grant-close! [room-id] (rpc! chat-remote/close-screen-grant! room-id))
+
+;; ---------------------------------------------------------------------------
+;; Capture lifecycle
+;; ---------------------------------------------------------------------------
+
+(defn- stop-capture! []
+  (when-let [{:keys [stream interval]} @capture]
+    (js/clearInterval interval)
+    (rec/stop!)
+    (doseq [t (.getTracks stream)] (.stop t))
+    (reset! capture nil)
+    (js/console.log "[screen-share] capture stopped")))
+
+(defn- ensure-capture!
+  "Resolve a promise once a capture session is running. Starts getDisplayMedia
+   (browser picker) only if none is active; reuses the running stream otherwise.
+   `on-fail` is called if the user denies the picker."
+  [on-fail]
+  (if @capture
+    (js/Promise.resolve true)
+    (-> (.getDisplayMedia js/navigator.mediaDevices
+                          ;; 10fps: the recorder rides this same track.
+                          #js {:video #js {:frameRate 10} :audio false})
+        (.then
+         (fn [stream]
+           (let [video (js/document.createElement "video")
+                 last-sig (atom nil)
+                 last-post (atom 0)]
+             (set! (.-srcObject video) stream)
+             (set! (.-muted video) true)
+             (.play video)
+             ;; the user can end the share from the browser's own bar → drop ALL grants
+             (when-let [track (first (.getVideoTracks stream))]
+               (set! (.-onended track) (fn [] (stop-all!))))
+             (let [interval
+                   (js/setInterval
+                    (fn []
+                      (when (>= (.-readyState video) 2)
+                        (let [sig (frame-signature video)
+                              now (js/Date.now)
+                              changed? (> (mean-abs-diff sig @last-sig) diff-threshold)
+                              stale? (> (- now @last-post) heartbeat-ms)]
+                          (when (or changed? stale?)
+                            (reset! last-sig sig)
+                            (reset! last-post now)
+                            (post-frame! video)))))
+                    capture-interval-ms)]
+               (reset! capture {:stream stream :interval interval :video video})
+               ;; Archive tier — same stream, one encoder. Recording is ALWAYS on
+               ;; while sharing: the raw video is training data for dynamic
+               ;; computer-use models, and it is the owner's own archive (per-user,
+               ;; playable and deletable in the Screens tab).
+               (rec/start! stream)
+               (js/setTimeout #(when (>= (.-readyState video) 2)
+                                 (reset! last-post (js/Date.now))
+                                 (reset! last-sig (frame-signature video))
+                                 (post-frame! video)) 1200)
+               (js/console.log "[screen-share] capture started")
+               true))))
+        (.catch (fn [e]
+                  (js/console.log "[screen-share] capture not started:" (.-message e))
+                  (when on-fail (on-fail))
+                  (js/Promise.reject e))))))
+
+(defn stop!
+  "Stop sharing into room-id: close its grant. If it was the last grant, stop the
+   capture. `on-change` is called with false."
+  [room-id on-change]
+  (when-let [{:keys [heartbeat]} (get @grants room-id)]
+    (js/clearInterval heartbeat))
+  (grant-close! room-id)
+  (swap! grants dissoc room-id)
+  (when (empty? @grants) (stop-capture!))
+  (js/console.log "[screen-share] stopped sharing into" room-id)
+  (when on-change (on-change false)))
+
+(defn stop-all!
+  "Drop every grant and stop the capture (e.g. the user ended the OS share)."
+  []
+  (doseq [[room-id {:keys [heartbeat]}] @grants]
+    (js/clearInterval heartbeat)
+    (grant-close! room-id))
+  (reset! grants {})
+  (stop-capture!))
+
+(defn start!
+  "Share the screen into room-id: ensure one capture is running, then open (and
+   heartbeat) a grant for this room. `on-change` is called with true once the
+   grant is live (false on deny)."
+  [room-id on-change]
+  (when-not (sharing? room-id)
+    (-> (ensure-capture! (fn [] (when on-change (on-change false))))
+        (.then
+         (fn [_]
+           (grant-open! room-id)
+           (let [beat (js/setInterval #(grant-beat! room-id) grant-beat-ms)]
+             (swap! grants assoc room-id {:heartbeat beat}))
+           (js/console.log "[screen-share] sharing into" room-id)
+           (when on-change (on-change true))))
+        (.catch (fn [_] nil)))))

@@ -1,0 +1,79 @@
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/lib/
+/classes/
+/target/
+/checkouts/
+.lein-deps-sum
+.lein-repl-history
+.lein-plugins/
+.lein-failures
+.nrepl-port
+.cpcache/
+.lsp/
+.shadow-cljs/
+node_modules/
+.clj-kondo/.cache
+# Library-exported lint configs, regenerable from deps by clj-kondo:
+#   clj-kondo --lint "$(clojure -Spath)" --dependencies --copy-configs --skip-lint
+.clj-kondo/imports/
+.calva/
+/public/js
+/public/main.css
+.idea
+*.iml
+
+# REPL-MCP logs
+repl-mcp.log
+repl-mcp.log-*
+
+# Dev scratch files
+src/is/simm/dev/user.clj
+
+# Separate git repositories (managed independently)
+/incremental/
+/incremental-clj/
+/incremental-ocaml/
+/clojure/
+/datahike/
+/distributed-scope/
+/electric/
+/partial-cps/
+/replicant/
+/replikativ/
+/zsxf/
+# Local dev symlinks to sibling repos
+/clojure
+/datahike
+/distributed-scope
+/electric
+/partial-cps
+/replikativ
+/spindel
+/zeitlauf
+/zsxf
+/opencode.json
+.dvergr/
+config.local.edn
+data/
+
+# Agent/editor scratch
+.claude/
+.codex
+.internal/
+LSAI_CONTEXT.md
+
+# a convenience symlink to a sibling checkout; it was TRACKED, so this rule
+# never applied to it and it shipped as a dangling out-of-tree link
+simmis-whilo
+
+# konserve store dirs accidentally created in the repo root by REPL sessions
+# (nREPL's cwd is the repo root; a plain :file store keyed by store-id lands here)
+/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*-*-*-*/
+
+# Slide decks (large; reveal.js is its own git repo)
+doc/presentations/
+doc/presentations.zip
+.alpha-credentials*

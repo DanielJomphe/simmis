@@ -1,0 +1,73 @@
+version: 2.1
+
+# Test gate for pull requests. Two things are checked, and the second matters
+# more than it looks: the test runner executes nothing in .cljs, so a broken
+# require or an undeclared var in the UI would otherwise reach a browser and
+# nowhere else. `release` is used so :advanced runs too.
+#
+# `clojure -X:test` and not -M: the :test alias uses :exec-fn, and -M:test
+# silently opens a REPL, which in CI looks like a hang or, worse, a pass.
+#
+# No auto-deploy. Deploying is a deliberate act.
+
+orbs:
+  tools: replikativ/clj-tools@0
+
+jobs:
+  test:
+    docker:
+      - image: cimg/clojure:1.12-node
+    resource_class: large
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Run JVM tests (Maven baseline)
+          command: clojure -X:test
+          no_output_timeout: 15m
+      - run:
+          name: Compile CLJS release (build gate)
+          command: |
+            npm ci
+            npx shadow-cljs release app
+          no_output_timeout: 20m
+      - save_cache:
+          key: deps-v1-{{ checksum "deps.edn" }}
+          paths:
+            - ~/.m2
+            - ~/.gitlibs
+            - node_modules
+
+  uberjar:
+    docker:
+      - image: cimg/clojure:1.12-node
+    resource_class: large
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "deps.edn" }}
+            - deps-v1-
+      - run:
+          name: Build standalone uberjar
+          command: |
+            npm ci
+            clojure -T:build uber
+          no_output_timeout: 30m
+      - store_artifacts:
+          path: target
+          destination: jars
+
+workflows:
+  build-and-test:
+    jobs:
+      - test
+      - uberjar:
+          requires:
+            - test
+          filters:
+            branches:
+              only: main
