@@ -4,7 +4,8 @@
             [org.replikativ.spindel.distributed.core :as dist]
             #?(:clj [is.simm.model.parties :as parties])
             #?(:clj [is.simm.model.knowledge-bases :as kbs])
-            #?(:clj [is.simm.model.mail-accounts :as mail])))
+            #?(:clj [is.simm.model.mail-accounts :as mail])
+            #?(:clj [is.simm.model.model-catalog :as model-catalog])))
 
 #?(:clj
    (defn load-settings-server [party-id-str]
@@ -16,6 +17,10 @@
         :budget (parties/get-budget party-id)
         :ui-prefs (parties/get-ui-prefs party-id)
         :mail-accounts (mail/list-accounts party-id)
+        ;; Built server-side: the version rows come from the live catalog
+        ;; crossed with dvergr's registry, so the picker cannot offer a model
+        ;; that would fail at turn time.
+        :model-choices (model-catalog/choices)
         :knowledge-bases (->> (kbs/get-party-kbs party-id)
                               (mapv (fn [kb]
                                       (-> kb

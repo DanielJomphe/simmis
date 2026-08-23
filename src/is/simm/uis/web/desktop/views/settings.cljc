@@ -35,22 +35,6 @@
                  (reset! sig/syntax-pref syn)))
             (fn [err] (js/console.error "[settings] reload error:" err)))))))
 
-;; =============================================================================
-;; Available Models
-;; =============================================================================
-
-(def available-models
-  [{:id "accounts/fireworks/models/glm-5p2"     :name "GLM 5.2 (Fireworks)"     :provider "fireworks"}
-   {:id "accounts/fireworks/models/glm-5p1"     :name "GLM 5.1 (Fireworks)"     :provider "fireworks"}
-   {:id "accounts/fireworks/models/kimi-k2p6"   :name "Kimi K2.6 (Fireworks)"   :provider "fireworks"}
-   {:id "accounts/fireworks/models/kimi-k2p5"   :name "Kimi K2.5 (Fireworks)"   :provider "fireworks"}
-   {:id "accounts/fireworks/models/minimax-m2p7" :name "MiniMax M2.7 (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/minimax-m2p5" :name "MiniMax M2.5 (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/qwen3p6-plus" :name "Qwen3.6 Plus (Fireworks)" :provider "fireworks"}
-   {:id "accounts/fireworks/models/deepseek-v4-pro" :name "DeepSeek V4 Pro (Fireworks)" :provider "fireworks"}
-   {:id "gpt-4o" :name "GPT-4o (OpenAI)" :provider "openai"}
-   {:id "claude-sonnet-4-20250514" :name "Claude Sonnet 4 (Anthropic)" :provider "anthropic"}])
-
 #?(:cljs
    (defn- mail-form-config []
      (let [value #(.-value (.getElementById js/document %))]
@@ -230,27 +214,50 @@
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Model Preference")
           (el/p {:class "settings-section-desc"}
-            "Choose the default LLM model for your AI assistant.")
+            "The model your agents use when they follow no model of their own. A \"latest\" choice tracks new releases; a version pins one.")
           (el/div {:class "settings-model-list"}
-            (ifor-each :id available-models
-              (fn [{:keys [id name provider]}]
-                (let [selected? (= id (:party/preferred-model profile))]
-                  (el/div {:key id
+            ;; `selected?` lives IN the item; the key stays the model value.
+            ;; ifor-each memoizes on item equality and cannot see a closure
+            ;; variable, so computing it inside the render function would leave
+            ;; the old row ticked. Putting it in the KEY is worse: the key is
+            ;; identity, so a row that gained a tick read as a NEW row and the
+            ;; list rendered both copies side by side.
+            (ifor-each :value
+              (mapv (fn [c]
+                      (assoc c :selected? (= (:value c) (:party/preferred-model profile))))
+                    (:model-choices data))
+              (fn [{:keys [value label kind provider-label no-reasoning?
+                           reasoning-copy reasoning-explanation selected?]}]
+                (el/div {:key value
                            :class (vc/class-names "settings-model-option"
                                                   (when selected? "selected"))
                            :on-click (fn [_]
                                        #?(:cljs
                                           (when-let [user @sig/current-user]
                                             (let [s (sr/save-preferred-model!
-                                                      web/server-id (:id user) id)]
+                                                      web/server-id (:id user) value)]
                                               (s (fn [_]
                                                    (reload-settings!))
                                                  (fn [err] (js/console.error "[settings] save error:" err)))))
                                           :clj nil))}
-                    (el/div {:class "settings-model-name"} name)
-                    (el/div {:class "settings-model-provider"} provider)
+                    (el/div {:class (vc/class-names "settings-model-name"
+                                                    (when (= kind :version)
+                                                      "settings-model-name--version"))}
+                      label)
+                    (when no-reasoning?
+                      ;; :data-tooltip, not :title. A native title tooltip is
+                      ;; drawn by the OS: it waits a second, ignores our
+                      ;; styling, never appears on touch, and cannot be captured
+                      ;; in a screenshot for docs. This one is a ::after on
+                      ;; hover. Both the words and the explanation come from the
+                      ;; server, so this row and the agent's configuration panel
+                      ;; say the same thing.
+                      (el/div {:class "settings-model-tag"
+                               :data-tooltip reasoning-explanation}
+                        (str "reasoning " reasoning-copy)))
+                    (el/div {:class "settings-model-provider"} provider-label)
                     (when selected?
-                      (vc/icon "check" {:class "settings-model-check"}))))))))
+                      (vc/icon "check" {:class "settings-model-check"})))))))
 
         ;; --- Code View Section ---
         (let [current-syntax (or (get-in data [:ui-prefs :ui-pref/syntax]) :clojure)]

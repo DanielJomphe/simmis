@@ -5,6 +5,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
+            #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
             #?(:cljs [is.simm.runtimes.web :as web]))
   #?(:cljs (:require-macros [org.replikativ.spindel.dom.elements :as el]
                             [org.replikativ.spindel.dom.foreach :refer [ifor-each]])))
@@ -118,8 +119,16 @@
                     (el/div {:class "settings-env-row"}
                       (el/span {:class "settings-env-key"}
                         (or (:party/display-name agent) "Agent"))
-                      (el/span {:class "settings-env-value settings-agent-model"}
-                        (or (:party/model agent) "default"))
+                      ;; The picker's own label for this agent's choice, the
+                      ;; same string the agent inspector prints. Display only:
+                      ;; the picker itself lives one click away, on the agent's
+                      ;; name.
+                      (el/span {:class "settings-env-value settings-agent-model"
+                                :data-tooltip (str "Running "
+                                                   (or (:model-short (:model-info agent)) "?")
+                                                   " via "
+                                                   (or (:provider-label (:model-info agent)) "?"))}
+                        (or (:choice-label (:model-info agent)) "default"))
                       (el/button {:class "settings-env-delete"
                                   :title "Remove participant"
                                   :on-click (fn [_]
@@ -203,10 +212,11 @@
                                    #?(:cljs
                                       (let [ta (.getElementById js/document (str "agent-prompt-" agent-id))
                                             sp (.-value ta)
+                                            ;; "" leaves the model alone.
                                             s  (cr/update-agent-config!
                                                  web/server-id agent-id
                                                  (:party/display-name agent)
-                                                 (:party/model agent)
+                                                 ""
                                                  sp)]
                                         (s (fn [_] (reset! sig/admin-data nil))
                                            (fn [err] (js/console.error "[room-settings] update agent error:" err))))
@@ -236,7 +246,14 @@
                                                       (:id current-user)
                                                       tmpl-label
                                                       tmpl-id)]
-                                              (s (fn [_] (reset! sig/admin-data nil))
+                                              (s (fn [_]
+                                                   (reset! sig/admin-data nil)
+                                                   ;; Contacts render from
+                                                   ;; sig/user-rooms, which
+                                                   ;; nothing here refreshed —
+                                                   ;; a new agent showed up only
+                                                   ;; after a page reload.
+                                                   (urs/refresh-user-rooms! (:id current-user)))
                                                  (fn [err] (js/console.error "[room-settings] add agent error:" err)))))
                                           :clj nil))}
                     (vc/icon tmpl-icon)
@@ -262,7 +279,8 @@
                                                          "")]
                                                  (s (fn [_]
                                                       (set! (.-value input) "")
-                                                      (reset! sig/admin-data nil))
+                                                      (reset! sig/admin-data nil)
+                                                      (urs/refresh-user-rooms! (:id current-user)))
                                                     (fn [err] (js/console.error "[room-settings] add agent error:" err)))))))
                                          :clj nil))}
                 "Add Custom"))))

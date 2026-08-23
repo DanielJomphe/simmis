@@ -11,6 +11,8 @@
             #?(:clj [is.simm.model.system-db :as system-db])
             #?(:clj [is.simm.agents.room-agents :as room-agents])
             #?(:clj [is.simm.agents.templates :as templates])
+            #?(:clj [is.simm.model.model-selection :as model-selection])
+            #?(:clj [is.simm.model.model-catalog :as model-catalog])
             #?(:clj [dvergr.chat.context :as chat-ctx])
             #?(:clj [dvergr.chat.accounting :as acct])
             #?(:clj [dvergr.agent.run :as agent-run])
@@ -108,8 +110,7 @@
                                                 room-info (assoc :room-id (str (:room-id room-info))
                                                                  :room-name (:room-name room-info))
                                                 (= :agent (:party/type p))
-                                                (assoc :model (:party/model p)
-                                                       :provider (:party/provider p)
+                                                (assoc :model-info (room-agents/describe-model p)
                                                        :auto-respond? (boolean (:party/auto-respond? p))))))))
                                   (sort-by (juxt #(case (:type %) :human 0 :agent 1 2)
                                                  :display-name))
@@ -515,7 +516,13 @@
                         (assoc :room/budget-dollars (rooms/get-room-budget-dollars room-uuid))
                         (dissoc :room/parties)))
             :humans humans
-            :agents agents
+            ;; Every agent carries what it will ACTUALLY run, resolved by the
+            ;; same function the join uses. The raw attributes cannot be read
+            ;; by a person: a family-following agent has no :party/model, so
+            ;; the screens printed "—" and "default" for a model that resolves
+            ;; fine.
+            :agents (mapv (fn [a] (assoc a :model-info (room-agents/describe-model a))) agents)
+            :model-choices (model-catalog/choices)
             :all-humans all-humans
             :knowledge-bases (mapv (fn [kb]
                                      (-> kb
@@ -725,9 +732,10 @@
                agent (parties/create-agent! owner-uuid
                        (cond-> {:display-name display
                                 :auto-respond? true}
+                         ;; family + version, never a frozen id or a provider
                          tmpl (merge {:template (:id tmpl)
-                                      :model (:model tmpl)
-                                      :provider (:provider tmpl)
+                                      :model-family (:model-family tmpl)
+                                      :model-version (:model-version tmpl)
                                       :system-prompt (:system-prompt tmpl)})))]
            (rooms/add-party! room-uuid (:party/id agent))
            (when-let [slug (:room/slug (rooms/get-room room-uuid))]
@@ -738,20 +746,35 @@
          :cljs nil))))
 
 (defn-spin-remote update-agent-config!
-  [server-id agent-id-str agent-name model system-prompt]
-  (spin-remote server-id [agent-id-str agent-name model system-prompt]
+  [server-id agent-id-str agent-name model-choice system-prompt]
+  (spin-remote server-id [agent-id-str agent-name model-choice system-prompt]
     (let [aid (identity agent-id-str)
           an  (identity agent-name)
-          m   (identity model)
+          m   (identity model-choice)
           sp  (identity system-prompt)]
       #?(:clj
-         (let [agent-uuid (java.util.UUID/fromString aid)]
+         (let [agent-uuid (java.util.UUID/fromString aid)
+               ;; ONE string, two meanings. A `*` marks a family, so the agent
+               ;; follows it and picks up new releases; anything else is a
+               ;; pinned id. Whichever arrives, the OTHER form is cleared:
+               ;; `resolve-config` lets a family beat a pinned id, so leaving a
+               ;; stale family behind would silently ignore the pin the person
+               ;; just chose. :actor/config is an EDN map, so nil clears.
+               model-patch (when (seq m)
+                             (if (model-selection/family? m)
+                               {:party/model-family m
+                                :party/model-version :auto
+                                :party/model nil}
+                               {:party/model m
+                                :party/model-family nil
+                                :party/model-version nil}))]
            (parties/update-agent! agent-uuid
              (cond-> {}
                (seq an) (assoc :party/display-name an)
-               (seq m)  (assoc :party/model m)
-               (some? sp) (assoc :party/system-prompt sp)))
-           {:status :ok})
+               (some? sp) (assoc :party/system-prompt sp)
+               model-patch (merge model-patch)))
+           {:status :ok
+            :model-info (room-agents/describe-model (parties/get-party agent-uuid))})
          :cljs nil))))
 
 (defn-spin-remote update-agent-assignment!

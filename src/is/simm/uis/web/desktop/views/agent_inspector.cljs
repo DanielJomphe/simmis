@@ -19,12 +19,13 @@
    - :agent-id   string UUID
    - :room-id    string UUID of the room this agent belongs to
    - :agent-name string
-   - :model      string LLM model identifier
+   - :model-info map from room-agents/describe-model
 
    admin-data: result of load-room-details!
    room-states: current room-states signal value (map of scope-str → {:db db})"
   [data admin-data room-states]
-  (let [{:keys [agent-id room-id agent-name model]} data
+  (let [{:keys [agent-id room-id agent-name model-info]} data
+        model (:model model-info)
         label (cond
                 (str/includes? (or model "") "claude") "Claude"
                 (str/includes? (or model "") "gpt")    "GPT"
@@ -88,25 +89,100 @@
         (let [agent-config (->> (:agents admin-data)
                                 (filter #(= (str (:party/id %)) agent-id))
                                 first)
+              ;; Freshest first: the room details reload after every save, while
+              ;; the tab's own copy is whatever the nav had when it was opened.
+              chosen (or (:model-info agent-config) model-info)
               room-kbs (:knowledge-bases admin-data)]
 
           (el/div {:class "agent-inspector-body"}
 
-            ;; Configuration section
+            ;; Configuration section. Everything here comes from :model-info,
+            ;; which the server computes with the SAME function the turn uses
+            ;; (room-agents/describe-model). Reading :party/model directly is
+            ;; what used to print "—" for an agent following a family, next to
+            ;; a provider it never chose.
+            (let [{:keys [model model-short choice-label provider-label no-reasoning?
+                          reasoning-copy reasoning-explanation inherited?]} chosen]
+              (el/div {:class "agent-inspector-section"}
+                (el/h3 {:class "agent-inspector-section-title"} "Configuration")
+                (el/div {:class "agent-inspector-config"}
+                  ;; The PICKER's own label, printed verbatim. Composing a
+                  ;; second name here is what produced "family latest" beside a
+                  ;; list that says "(latest)".
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Model")
+                    (el/span {:class "agent-inspector-value"}
+                      (str (or choice-label model "—")
+                           (when inherited? " · your default"))))
+                  ;; The short id, so every provider reads the same way here.
+                  ;; The full id stays one hover away for the path-addressed
+                  ;; ones.
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Running now")
+                    (el/span {:class (vc/class-names "agent-inspector-value"
+                                                     "agent-inspector-value--mono"
+                                                     (when (not= model model-short) "has-tooltip"))
+                              :data-tooltip (or model "")}
+                      (or model-short model "—")))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Provider")
+                    (el/span {:class "agent-inspector-value"}
+                      (or provider-label "unknown")))
+                  ;; Reasoning gets its own row rather than a suffix on the
+                  ;; provider, where it read as a claim about OpenAI. Same words
+                  ;; as the picker's tag, from the same server field, and the
+                  ;; tooltip names the tools it is talking about.
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Reasoning")
+                    ;; A LITERAL attribute map. el/span reads the first form as
+                    ;; attributes only when it is written as a map; a cond->
+                    ;; that builds one at runtime renders as text.
+                    (el/span {:class (vc/class-names "agent-inspector-value"
+                                                     (when no-reasoning? "has-tooltip"))
+                              :data-tooltip (or reasoning-explanation "")}
+                      (or reasoning-copy "on")))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Auto-respond")
+                    (el/span {:class "agent-inspector-value"}
+                      (if (:party/auto-respond? agent-config) "Yes" "No"))))))
+
+            ;; Model picker. Same list Settings shows, same meaning: a "latest"
+            ;; row stores the family so releases arrive on their own.
             (el/div {:class "agent-inspector-section"}
-              (el/h3 {:class "agent-inspector-section-title"} "Configuration")
-              (el/div {:class "agent-inspector-config"}
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Model")
-                  (el/span {:class "agent-inspector-value"} (or model "—")))
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Provider")
-                  (el/span {:class "agent-inspector-value"}
-                    (name (or (:party/provider agent-config) :unknown))))
-                (el/div {:class "agent-inspector-row"}
-                  (el/span {:class "agent-inspector-label"} "Auto-respond")
-                  (el/span {:class "agent-inspector-value"}
-                    (if (:party/auto-respond? agent-config) "Yes" "No")))))
+              (el/h3 {:class "agent-inspector-section-title"} "Model")
+              (el/div {:class "settings-model-list"}
+                ;; :value is the key, `:selected?` rides in the item. See the
+                ;; same list in settings.cljc for why the tick must not be part
+                ;; of the key.
+                (ifor-each :value
+                  (mapv (fn [c]
+                          (assoc c :selected?
+                                 (if (and (:family chosen) (:auto? chosen))
+                                   (= (:value c) (:family chosen))
+                                   (= (:value c) (:model chosen)))))
+                        (:model-choices admin-data))
+                    (fn [{:keys [value label kind provider-label no-reasoning?
+                                 reasoning-copy reasoning-explanation selected?]}]
+                      (el/div {:key value
+                               :class (vc/class-names "settings-model-option"
+                                                      (when selected? "selected"))
+                               :on-click
+                               (fn [_]
+                                 (let [s (chat-remote/update-agent-config!
+                                           web/server-id agent-id agent-name value nil)]
+                                   (s (fn [_] (reset! sig/admin-data nil))
+                                      (fn [err] (js/console.error "[agent-inspector] model error:" err)))))}
+                        (el/div {:class (vc/class-names "settings-model-name"
+                                                        (when (= kind :version)
+                                                          "settings-model-name--version"))}
+                          label)
+                        (when no-reasoning?
+                          (el/div {:class "settings-model-tag"
+                                   :data-tooltip reasoning-explanation}
+                            (str "reasoning " reasoning-copy)))
+                        (el/div {:class "settings-model-provider"} provider-label)
+                        (when selected?
+                          (vc/icon "check" {:class "settings-model-check"})))))))
 
             ;; System prompt section — always editable
             (let [prompt (or (:party/system-prompt agent-config) "")
@@ -115,12 +191,23 @@
               (el/h3 {:class "agent-inspector-section-title"} "System Prompt")
               (el/textarea
                 {:id ta-id
+                 ;; The key carries the agent, so switching contacts builds a
+                 ;; DIFFERENT node rather than reusing this one.
+                 :key ta-id
                  :class "settings-textarea"
                  :rows 10
                  :placeholder "Describe the agent's personality and role..."
-                 ;; ref sets value imperatively on mount (only if empty, preserving user edits)
+                 ;; The old guard filled the textarea only when it was EMPTY,
+                 ;; which is true once and never again. The node survives a
+                 ;; switch from one agent to the next, so Lun's inspector showed
+                 ;; Vár's prompt under Lun's id, and Save would have written it
+                 ;; onto Lun. Refill when the agent behind the node changes, and
+                 ;; only then, so an edit in progress survives a re-render.
+                 ;; getAttribute/setAttribute, not .dataset: the compiler
+                 ;; cannot infer a type for the dataset property and warns.
                  :ref (fn [node]
-                        (when (and node (empty? (.-value node)))
+                        (when (and node (not= (.getAttribute node "data-agent-id") agent-id))
+                          (.setAttribute node "data-agent-id" agent-id)
                           (set! (.-value node) prompt)))})
               (el/button
                 {:class "settings-btn settings-btn--primary"
@@ -128,8 +215,10 @@
                  :on-click (fn [_]
                              (let [ta (.getElementById js/document (str "agent-inspector-prompt-" agent-id))
                                    sp (.-value ta)
+                                   ;; "" for the model choice: this button saves
+                                   ;; the prompt, and must not re-pin a model.
                                    s  (chat-remote/update-agent-config!
-                                        web/server-id agent-id agent-name model sp)]
+                                        web/server-id agent-id agent-name "" sp)]
                                (s (fn [_]
                                     (reset! sig/admin-data nil))
                                   (fn [err] (js/console.error "[agent-inspector] update error:" err)))))}

@@ -23,6 +23,7 @@
    Spend is NOT recorded here: dvergr's turn path writes the `:ledger/*` row
    and the `:chat/budget-used` rollup into the room's own store."
   (:require [dvergr.model.providers :as providers]
+            [dvergr.model.registry :as registry]
             [dvergr.chat.context :as chat-ctx]
             [dvergr.tools :as tools]
             [dvergr.discourse :as d]
@@ -2034,17 +2035,107 @@
 ;; Provider resolution + billing
 ;; =============================================================================
 
+(def ^:private models-dev-timeout-ms 10000)
+
+(defonce ^:private openai-catalog
+  ;; dvergr's registry ships Anthropic built-ins plus the Fireworks set from
+  ;; its models.edn — and nothing for OpenAI. The turn path resolves a model
+  ;; with `registry/get-model!`, which THROWS on an unknown id, so an
+  ;; OPENAI_API_KEY alone bought a registered provider that no model could
+  ;; reach. This is dvergr's own answer to that (see `refresh-from-models-dev!`
+  ;; — "pick up new model releases without recompiling"): one overlay of
+  ;; <https://models.dev> at first use, carrying live pricing and context
+  ;; limits for the whole current GPT line.
+  ;;
+  ;; :openai ONLY. The overlay REPLACES a registry entry, and on released
+  ;; dvergr that drops the entry's :quirks — harmless where nothing was
+  ;; registered, destructive over the Anthropic built-ins that carry
+  ;; :thinking-budget?.
+  ;;
+  ;; A delay over a future: the fetch is `slurp` on a URL, which has no
+  ;; timeout of its own, and no boot should hang on a third-party catalog.
+  ;; Past the deadline the registry keeps whatever it had — one OpenAI turn
+  ;; may fail on an unknown id, and the fetch still lands for the next.
+  (delay
+    (let [result (deref (future
+                          (try (registry/refresh-from-models-dev! #{:openai})
+                               (catch Throwable t
+                                 (log/log! {:level :warn :id ::models-dev-refresh-failed
+                                            :data {:error (ex-message t)}})
+                                 nil)))
+                        models-dev-timeout-ms ::timeout)]
+      (log/log! {:level :info :id ::openai-catalog-loaded
+                 :data {:models result}})
+      result)))
+
 (defn- ensure-providers! []
   (when (empty? (providers/list-providers))
-    (providers/init-defaults!)))
+    (providers/init-defaults!))
+  @openai-catalog)
 
-(defn- resolve-provider [model provider-hint]
-  (or provider-hint
+(defn resolve-provider
+  "Which provider serves `model`.
+
+   The REGISTRY answers first, ahead of the caller's hint. An id the registry
+   knows carries its own provider, and the hint is usually not a choice anybody
+   made: every agent created through the UI used to be stamped
+   `:party/provider :fireworks` at creation, so pinning one to gpt-5.5 sent the
+   request to Fireworks, which 404s it. A hint still wins for an id the registry
+   has never heard of, which is how a custom OpenAI-compatible endpoint gets
+   addressed.
+
+   Prefixes are the last resort, and cannot keep up with naming on their own:
+   OpenAI's o3 and o4-mini start with neither `gpt-` nor `claude-`."
+  [model provider-hint]
+  (or (some-> model registry/get-model :provider)
+      provider-hint
       (cond
         (str/starts-with? (or model "") "accounts/fireworks/") :fireworks
         (str/starts-with? (or model "") "gpt-") :openai
         (str/starts-with? (or model "") "claude-") :anthropic
         :else :fireworks)))
+
+(defn describe-model
+  "What an agent will ACTUALLY run, from its stored config plus its owner's
+   preference. The UI shows this instead of the raw attributes: a
+   family-following agent stores no `:party/model` at all, so the inspector read
+   `nil` and printed \"—\" for a model that resolves perfectly well.
+
+   {:model :family :version :auto? :configured? :provider :no-reasoning? :label}"
+  [agent-party]
+  (ensure-providers!)
+  (let [{:keys [family version auto? model configured?]}
+        (model-selection/describe
+          {:model-family (:party/model-family agent-party)
+           :model-version (:party/model-version agent-party)
+           :model (:party/model agent-party)})
+        owner-id (:party/id (:party/owner agent-party))
+        inherited (when-not configured?
+                    (some-> (parties/get-party owner-id)
+                            :party/preferred-model
+                            model-selection/resolve-string))
+        model (or model inherited parties/default-model)
+        provider (resolve-provider model (:party/provider agent-party))]
+    (as-> {:model model
+           :family family
+           :version version
+           :auto? auto?
+           :configured? configured?
+           :inherited? (boolean (and (not configured?) inherited))
+           :provider provider
+           :provider-label ((requiring-resolve 'is.simm.model.model-catalog/provider-label) provider)
+           :model-short ((requiring-resolve 'is.simm.model.model-catalog/short-id) model)
+           :no-reasoning? (boolean (registry/get-quirk model :chat-tools-need-effort-none?))
+           :label (or (:name (registry/get-model model)) model)} info
+      ;; The label the PICKER uses for this same choice. The configuration panel
+      ;; prints it verbatim, so the two cannot drift into separate vocabularies
+      ;; ("family latest" against "(latest)") the way they did.
+      (merge info
+             ((requiring-resolve 'is.simm.model.model-catalog/reasoning-copy)
+              (:no-reasoning? info))
+             {:choice-label
+              (or ((requiring-resolve 'is.simm.model.model-catalog/choice-label) info)
+                  (:label info))}))))
 
 ;; A `:run-turn-fn` wrapper used to mirror each turn's usage onto the owner's
 ;; billing ledger in the system DB. It never recorded anything: it read
@@ -2135,26 +2226,23 @@
             actor-kw (party->actor-kw agent-party)
             kb-conns (get-room-kb-conns room-uuid)
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
-            owner-id (:party/id (:party/owner agent-party))
-            fallback-model (when owner-id
-                             (:party/preferred-model (parties/get-party owner-id)))
             ;; Resolved HERE, per participant creation — never frozen into the
             ;; agent's stored config. An agent records the family it belongs to
             ;; and whether its version is pinned or :auto; the concrete id is
             ;; computed against the provider's live catalog. This is why Vár ran
             ;; glm-5p1 for eleven days after we "switched" to 5p2: the id had
             ;; been baked in at creation, and no code change could reach it.
-            model (or (model-selection/resolve-config
-                        {:model-family (:party/model-family agent-party)
-                         :model-version (:party/model-version agent-party)
-                         :model (:party/model agent-party)})
-                      fallback-model
-                      parties/default-model)
-            provider (resolve-provider model (:party/provider agent-party))
+            ;;
+            ;; ONE function, shared with the UI. The inspector and the room
+            ;; settings render exactly what this join uses, so a screen can no
+            ;; longer disagree with a turn.
+            {:keys [model provider] :as chosen} (describe-model agent-party)
             _ (log/log! {:level :info :id ::model-resolved
                          :data {:agent (:party/display-name agent-party)
-                                :family (:party/model-family agent-party)
-                                :version (or (:party/model-version agent-party) :pinned-id)
+                                :family (:family chosen)
+                                :version (or (:version chosen) (when (:auto? chosen) :auto) :pinned-id)
+                                :inherited? (:inherited? chosen)
+                                :provider provider
                                 :model model}})
             ;; Base prompt via dvergr's ONE assembler (discourse-preamble +
             ;; [SKIP] convention + skills + tool-use-guideline + the sandbox

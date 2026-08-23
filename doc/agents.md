@@ -81,7 +81,34 @@ authorized in advance with a budget rather than after the fact.
 ## Models
 
 Agents call an LLM through a provider key from the environment —
-`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`.
-`OPENAI_BASE_URL` plus `OPENAI_API_KEY` points at any OpenAI-compatible
+`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. A provider is
+registered only when its key is present. `OPENAI_API_KEY` on its own talks to
+OpenAI; `OPENAI_BASE_URL` re-points that key at any other OpenAI-compatible
 endpoint, including a local one. Each agent's model can be set per room in its
 settings.
+
+An agent stores a model FAMILY (`gpt-*-luna`, `accounts/fireworks/models/glm-*`)
+and either a pinned version or `:auto`; the concrete id is resolved on every
+turn against the live `/models` catalogs of the endpoints the keys reach
+(`is.simm.model.model-selection`). An agent that stores neither follows its
+OWNER's preference from Settings, then the code default.
+
+A model must also exist in dvergr's registry, which is where its context window
+and its price per token come from — an unregistered id fails the turn rather
+than running at an unknown cost. `:auto` therefore picks the newest version that
+the provider serves AND the registry knows: Fireworks was serving kimi-k3 while
+the registry stopped at k2p6, and one version behind beats a turn that cannot
+start.
+
+The PROVIDER is derived from the model, never stored beside it. A stored
+provider is a second thing to keep in sync, and it used to win: every agent
+created in the UI was stamped `:fireworks` at creation, so pinning one to an
+OpenAI model still posted the request to Fireworks. `room-agents/describe-model`
+resolves model, provider and version together, and both the agent inspector and
+the room settings render exactly what it returns, so no screen can disagree with
+a turn.
+
+One provider quirk is load-bearing here: on `/v1/chat/completions`, OpenAI's
+GPT-5.6 models refuse function tools unless `reasoning_effort` is `"none"`.
+dvergr sends that for them, so tools work and server-side reasoning does not.
+Agents that need both belong on `gpt-5.5` until the Responses API is spoken.

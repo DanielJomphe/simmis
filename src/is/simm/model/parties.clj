@@ -246,7 +246,6 @@
   [owner-id {:keys [display-name handle system-prompt model model-family model-version
                     provider template auto-respond? avatar]
              :or {auto-respond? true
-                  provider :fireworks
                   ;; A new agent follows a FAMILY at its newest version — it does
                   ;; NOT freeze a concrete id. Freezing is what left Vár on
                   ;; glm-5p1 for eleven days after we "switched" to 5p2: config
@@ -265,8 +264,14 @@
       (actors/spawn-agent! conn
                            (cond-> {:id actor-id
                                     :name display-name
-                                    :config (cond-> {:provider provider
-                                                     :auto-respond? auto-respond?}
+                                    ;; NO :provider unless one was asked for.
+                                    ;; It used to default to :fireworks, and
+                                    ;; that stamp then beat the registry at turn
+                                    ;; time, so an agent pinned to gpt-5.5 was
+                                    ;; still posted to Fireworks. The provider
+                                    ;; follows the model now.
+                                    :config (cond-> {:auto-respond? auto-respond?}
+                                              provider      (assoc :provider provider)
                                               ;; explicit pin beats the family
                                               model         (assoc :model model)
                                               (not model)   (assoc :model-family model-family

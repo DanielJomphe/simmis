@@ -6,8 +6,9 @@
    - :name        string   — display name
    - :description string   — one-liner shown in the picker
    - :icon        string   — lucide icon name
-   - :model       string   — default LLM model
-   - :provider    keyword  — :fireworks | :openai | :anthropic
+   - :model-family  string  — the family a new agent follows, e.g.
+                              accounts/fireworks/models/glm-*
+   - :model-version :auto or a pinned version token
    - :system-prompt string — full system prompt"
   (:require [is.simm.model.parties :as parties]))
 
@@ -16,8 +17,8 @@
    :name "Vár"
    :description "Friendly secretary — organizes knowledge, answers questions, keeps pages coherent"
    :icon "bot"
-   :model parties/default-model
-   :provider :fireworks
+   :model-family parties/default-family
+   :model-version :auto
    :system-prompt
    "You are Vár, a friendly and capable secretary assistant for Simmis.
 
@@ -190,8 +191,8 @@ already runs against its own page's KB.)
    :name "Researcher"
    :description "Deep research and knowledge synthesis — searches, reads, summarizes"
    :icon "search"
-   :model parties/default-model
-   :provider :fireworks
+   :model-family parties/default-family
+   :model-version :auto
    :system-prompt
    "You are a research assistant. Your role is to find, read, and synthesize information.
 
@@ -210,8 +211,8 @@ Be thorough but concise. Cite your sources."})
    :name "Analyst"
    :description "Data analysis and visualization — queries data, builds charts"
    :icon "bar-chart-2"
-   :model parties/default-model
-   :provider :fireworks
+   :model-family parties/default-family
+   :model-version :auto
    :system-prompt
    "You are a data analyst. Your role is to query data, compute statistics, and
 create visualizations.
@@ -244,8 +245,8 @@ or two sentences, then offer to save it to the wiki."})
    :name "Coder"
    :description "Software development assistant \u2014 writes, explains, and debugs code"
    :icon "code-2"
-   :model parties/default-model
-   :provider :fireworks
+   :model-family parties/default-family
+   :model-version :auto
    :system-prompt
    "You are a software development assistant. You write, explain, and debug code.
 

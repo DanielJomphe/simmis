@@ -7331,8 +7331,99 @@ body.tab-dragging .column-drop-zone {
 .settings-model-provider {
   font-size: var(--text-xs);
   color: var(--mono-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+}
+
+/* A pinned version sits under its family row, indented and quieter, so the
+   list reads as families with versions rather than a flat wall of names. */
+.settings-model-name--version {
+  padding-left: var(--spacing-md);
+  color: var(--mono-text-secondary);
+  font-weight: 400;
+}
+
+.settings-model-tag {
+  position: relative;
+  font-size: var(--text-xs);
+  color: var(--mono-text-tertiary);
+  padding: 2px var(--spacing-xs);
+  border: 1px solid var(--mono-border-subtle);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.settings-model-tag[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  width: 240px;
+  padding: var(--spacing-sm);
+  background: var(--mono-bg-elevated);
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  color: var(--mono-text-secondary);
+  font-size: var(--text-sm);
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.settings-agent-model[data-tooltip] {
+  position: relative;
+  cursor: help;
+}
+
+.settings-agent-model[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  width: 260px;
+  padding: var(--spacing-sm);
+  background: var(--mono-bg-elevated);
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  color: var(--mono-text-secondary);
+  font-size: var(--text-sm);
+  white-space: normal;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.agent-inspector-value.has-tooltip {
+  position: relative;
+  cursor: help;
+  border-bottom: 1px dotted var(--mono-border);
+}
+
+.agent-inspector-value.has-tooltip:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  width: 280px;
+  padding: var(--spacing-sm);
+  background: var(--mono-bg-elevated);
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  color: var(--mono-text-secondary);
+  font-size: var(--text-sm);
+  white-space: normal;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.agent-inspector-value--mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-xs);
+  color: var(--mono-text-tertiary);
 }
 
 .settings-model-check {

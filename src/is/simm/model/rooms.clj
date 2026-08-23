@@ -237,8 +237,8 @@
                                              :display-name (:name tmpl)
                                              :handle (str "vár-" (subs (str owner-party-id) 0 8))
                                              :avatar "🤖"
-                                             :model (:model tmpl)
-                                             :provider (:provider tmpl)
+                                             :model-family (:model-family tmpl)
+                                             :model-version (:model-version tmpl)
                                              :system-prompt (:system-prompt tmpl)
                                              :auto-respond? true})]
           (add-party! (:room/id room) (:party/id agent))))

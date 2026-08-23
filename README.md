@@ -109,11 +109,13 @@ external identity providers, and every environment variable simmis reads.
 ### LLM providers
 
 Agents need a model. Provider keys come from the environment —
-`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`.
-The fallback model is `accounts/fireworks/models/glm-5p2`, so `FIREWORKS_API_KEY`
-is the path of least resistance; set `OPENAI_BASE_URL` + `OPENAI_API_KEY` to
-point at any OpenAI-compatible endpoint (including a local one) instead. Each
-agent's model can also be set per room in its settings.
+`FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`; a provider is
+registered only when its key is present. The fallback model is
+`accounts/fireworks/models/glm-5p2`, so `FIREWORKS_API_KEY` is the path of least
+resistance. `OPENAI_API_KEY` on its own reaches OpenAI (the GPT-5.6 and GPT-5.5
+models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
+endpoint, including a local one. Each agent's model can also be set per room in
+its settings.
 
 ### Production build
 
