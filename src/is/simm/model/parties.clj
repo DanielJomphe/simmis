@@ -55,6 +55,21 @@
     (try (edn/read-string s)
          (catch Exception _ nil))))
 
+(defn- apply-config-patch
+  "Merge a legacy :party/* config patch into actor config.
+
+   nil means remove the key, not store a nil placeholder. Model switches have
+   always sent nil for the mutually exclusive form; making that a real removal
+   is also what lets clearing an override return an agent to genuinely empty
+   inherited model state."
+  [config patch]
+  (reduce-kv (fn [m k v]
+               (if (nil? v)
+                 (dissoc m k)
+                 (assoc m k v)))
+             (or config {})
+             patch))
+
 (def ^:private actor-core-keys
   [:actor/id :actor/kind :actor/name :actor/created-at
    :actor/system-prompt :actor/status :actor/config])
@@ -206,7 +221,8 @@
                  (contains? allowed :party/preferred-model)
                  (assoc :party/preferred-model (:party/preferred-model allowed))
                  (seq config-patch)
-                 (assoc :actor/config (pr-str (merge existing-config config-patch))))]
+                 (assoc :actor/config
+                        (pr-str (apply-config-patch existing-config config-patch))))]
         (d/transact conn [tx])
         (log/log! {:level :info
                    :id ::party-updated
@@ -228,8 +244,8 @@
   model-selection/default-model)
 
 (def default-family
-  "Family a new agent follows, at whatever version the provider currently
-   serves. This — not `default-model` — is what a new agent gets."
+  "Family form of the product fallback. Kept for callers that deliberately
+   request an explicit family override; new agents store no model choice."
   model-selection/default-family)
 
 (defn create-agent!
@@ -245,14 +261,7 @@
    (:party/id alias, :party/owner, handle, avatar) onto the same entity."
   [owner-id {:keys [display-name handle system-prompt model model-family model-version
                     provider template auto-respond? avatar]
-             :or {auto-respond? true
-                  ;; A new agent follows a FAMILY at its newest version — it does
-                  ;; NOT freeze a concrete id. Freezing is what left Vár on
-                  ;; glm-5p1 for eleven days after we "switched" to 5p2: config
-                  ;; captured at creation cannot be corrected by changing code.
-                  ;; Pass :model to pin an exact id deliberately.
-                  model-family default-family
-                  model-version :auto}}]
+             :or {auto-respond? true}}]
   (when-let [conn (system-db/get-conn)]
     (let [party-id (random-uuid)
           actor-id (party-id->actor-id party-id)
@@ -272,10 +281,14 @@
                                     ;; follows the model now.
                                     :config (cond-> {:auto-respond? auto-respond?}
                                               provider      (assoc :provider provider)
-                                              ;; explicit pin beats the family
+                                              ;; A model key exists only when a
+                                              ;; person explicitly asked for an
+                                              ;; override. Otherwise resolution
+                                              ;; follows owner preference.
                                               model         (assoc :model model)
-                                              (not model)   (assoc :model-family model-family
-                                                                   :model-version model-version)
+                                              (and (not model) model-family)
+                                              (assoc :model-family model-family
+                                                     :model-version (or model-version :auto))
                                               template      (assoc :template template))}
                              system-prompt (assoc :system-prompt system-prompt)))
       ;; 2. simmis extension attrs on the same entity

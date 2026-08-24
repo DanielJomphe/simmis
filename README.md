@@ -121,7 +121,10 @@ endpoint, including a local one. Fireworks always uses its own base and
 agent's model can also be set per room in its settings. The picker keeps every
 curated family visible and marks rows as available, credential-required, not yet
 supported, unavailable to the account, or temporarily unreachable; only
-available rows can be saved or run.
+available rows can be saved or run. New agents inherit their owner's validated
+preference (then the product default) without storing a model; the per-agent
+picker identifies inherited state, and clearing an explicit override returns to
+that inheritance chain.
 
 ### Production build
 

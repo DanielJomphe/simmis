@@ -90,9 +90,18 @@ credentials are never borrowed, even when two provider records have the same
 URL. Supplying `OPENAI_BASE_URL` also marks that record OpenAI-compatible rather
 than native OpenAI, so provider-specific request behavior remains explicit.
 
-An agent stores a model FAMILY (`gpt-*-luna`, `accounts/fireworks/models/glm-*`)
-and either a pinned version or `:auto`; the concrete id is resolved when the
-participant is joined or rejoined. For catalog-backed providers, `/models`
+New agents store no model selection. Persona/template selection supplies the
+role and system prompt, not a hidden model. An agent follows its owner's model
+preference from Settings, then the product fallback when the owner has no
+preference. Only an explicit per-agent override stores a model FAMILY
+(`gpt-*-luna`, `accounts/fireworks/models/glm-*`) with `:auto`, or a pinned
+model id. Clearing that override physically removes the agent's model keys and
+returns it to inheritance; existing explicit choices are not migrated or
+rewritten. The agent picker presents inheritance as its own first row and names
+whether the current state is inherited or an explicit override.
+
+The concrete id is resolved when the participant is joined or rejoined. For
+catalog-backed providers, `/models`
 answers which model ids that credential can currently reach
 (`is.simm.model.model-selection`). It does not supply pricing,
 context limits or capability metadata. Each returned id retains its provider,
@@ -101,10 +110,11 @@ two records. If one fetch fails, only that provider's last-known ids survive and
 the curated rows remain visible as `:temporarily-unreachable`. The picker and
 resolver share five states: `:available`, `:needs-credential`,
 `:not-implemented` (including a registry gap), `:unavailable-to-account`, and
-`:temporarily-unreachable`. Only `:available` may be saved or executed. An agent
-that stores neither follows its OWNER's preference from Settings, then the code
-default; an unavailable explicit or inherited choice never falls through to the
-default, a different family, or another provider.
+`:temporarily-unreachable`. Only `:available` may be saved or executed. Saving
+an owner preference, choosing an agent override, and clearing an override into
+inheritance all pass the same server-side availability validation. An
+unavailable explicit or inherited choice never falls through to the default, a
+different family, or another provider.
 
 A model must also exist in dvergr's registry, which is where its context window,
 capabilities and price per token come from. `/models` never adds to that
@@ -122,6 +132,12 @@ OpenAI model still posted the request to Fireworks. `room-agents/describe-model`
 resolves model, provider and version together, and both the agent inspector and
 the room settings render exactly what it returns, so no screen can disagree with
 a turn.
+
+The inspector says what a selection **resolves to**; it does not call that value
+the currently running model. In particular, changing an owner's preference
+changes inherited configuration immediately, while a participant that was
+already joined is rebuilt from it on a later rejoin. The configuration surface
+does not claim that rebuild has already happened.
 
 One native-provider quirk is load-bearing here: on OpenAI's configured
 `/v1/chat/completions` path, the GPT-5.6 entries require `reasoning_effort`

@@ -2061,47 +2061,34 @@
         (str/starts-with? (or model "") "gpt-") :openai
         (str/starts-with? (or model "") "claude-") :anthropic)))
 
-(defn describe-model
-  "What an agent will ACTUALLY run, from its stored config plus its owner's
-   preference. The UI shows this instead of the raw attributes: a
-   family-following agent stores no `:party/model` at all, so the inspector read
-   `nil` and printed \"—\" for a model that resolves perfectly well.
+(defn inheritance-choice
+  "The stored choice an agent inherits.
 
-   {:model :family :version :auto? :configured? :provider :no-reasoning? :label}"
+   Owner preference wins; an owner with no preference reaches the explicit
+   product fallback. This value is also what the clear-override write validates,
+   so display, persistence, and turn resolution share one chain."
   [agent-party]
-  (ensure-providers!)
-  (let [configured (model-selection/describe
-                    {:model-family (:party/model-family agent-party)
-                     :model-version (:party/model-version agent-party)
-                     :model (:party/model agent-party)})
-        owner-id (:party/id (:party/owner agent-party))
-        preference (when-not (:configured? configured)
-                     (some-> (parties/get-party owner-id) :party/preferred-model))
-        inherited (when (seq preference)
-                    (if (model-selection/family? preference)
-                      (model-selection/describe {:model-family preference
-                                                 :model-version :auto})
-                      (model-selection/describe {:model preference})))
-        defaulted (when-not (or (:configured? configured) inherited)
-                    (model-selection/describe {:model parties/default-model}))
-        chosen (cond
-                 (:configured? configured) configured
-                 inherited inherited
-                 :else defaulted)
-        model (:model chosen)
-        candidate (:candidate chosen)
+  (let [owner-id (:party/id (:party/owner agent-party))
+        preference (some-> (parties/get-party owner-id) :party/preferred-model)]
+    (if (seq preference)
+      {:value preference :source :owner-preference}
+      {:value parties/default-model :source :product-default})))
+
+(defn- describe-selection
+  "Decorate one model-selection/describe result for person-facing surfaces."
+  [selection provider-hint]
+  (let [model (:model selection)
+        candidate (:candidate selection)
         display-model (or model candidate)
-        provider (or (:provider chosen)
-                     (resolve-provider display-model (:party/provider agent-party)))
-        availability (:availability chosen)]
+        provider (or (:provider selection)
+                     (resolve-provider display-model provider-hint))
+        availability (:availability selection)]
     (as-> {:model model
            :candidate candidate
-           :family (:family chosen)
-           :version (:version chosen)
-           :auto? (:auto? chosen)
-           :configured? (:configured? configured)
-           :inherited? (boolean inherited)
-           :available? (:available? chosen)
+           :family (:family selection)
+           :version (:version selection)
+           :auto? (:auto? selection)
+           :available? (:available? selection)
            :availability (:state availability)
            :availability-reason (:reason availability)
            :provider provider
@@ -2119,6 +2106,61 @@
              {:choice-label
               (or (model-catalog/choice-label info)
                   (:label info))}))))
+
+(defn describe-model
+  "What an agent resolves to from its stored override plus owner preference.
+
+   `:configured?`/`:override?` mean model keys are stored on the agent.
+   `:inherited?` means the agent stores none, whether the chain ends at its
+   owner's preference or the product fallback. `:inheritance-choice` is the
+   first-class picker row that clears an override; it carries the same
+   availability result enforced by the server and turn path.
+
+   This describes configuration resolution, not whether a previously joined
+   runtime participant has already adopted a changed inherited value."
+  [agent-party]
+  (ensure-providers!)
+  (let [configured (model-selection/describe
+                    {:model-family (:party/model-family agent-party)
+                     :model-version (:party/model-version agent-party)
+                     :model (:party/model agent-party)})
+        override? (:configured? configured)
+        {:keys [value source]} (inheritance-choice agent-party)
+        inherited-selection (if (model-selection/family? value)
+                              (model-selection/describe {:model-family value
+                                                         :model-version :auto})
+                              (model-selection/describe {:model value}))
+        inherited-info (describe-selection inherited-selection nil)
+        chosen-info (if override?
+                      (describe-selection configured (:party/provider agent-party))
+                      inherited-info)
+        inheritance-label
+        (if (= source :owner-preference)
+          (str "Use owner preference — " (:choice-label inherited-info))
+          (str "Use owner preference — not set; product default "
+               (:choice-label inherited-info)))
+        inheritance-row
+        (merge
+         (select-keys inherited-info
+                      [:provider :provider-label :available? :availability
+                       :availability-reason :availability-label
+                       :availability-explanation :no-reasoning?
+                       :reasoning-copy :reasoning-explanation])
+         {:kind :inheritance
+          :value model-catalog/inherit-choice-value
+          :label inheritance-label
+          :resolves (or (:model inherited-info) (:candidate inherited-info))
+          :inheritance-source source})]
+    (assoc chosen-info
+           :configured? (boolean override?)
+           :override? (boolean override?)
+           :inherited? (not override?)
+           :selection-source (if override? :agent-override source)
+           :selection-label (case (if override? :agent-override source)
+                              :agent-override "Explicit override"
+                              :owner-preference "Inherited from owner preference"
+                              :product-default "Inherited from product default")
+           :inheritance-choice inheritance-row)))
 
 ;; A `:run-turn-fn` wrapper used to mirror each turn's usage onto the owner's
 ;; billing ledger in the system DB. It never recorded anything: it read
@@ -2210,10 +2252,11 @@
             kb-conns (get-room-kb-conns room-uuid)
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
             ;; Resolved HERE, per participant creation — never frozen into the
-            ;; agent's stored config. An agent records the family it belongs to
-            ;; and whether its version is pinned or :auto; the concrete id is
-            ;; computed against the provider's availability catalog. This is why Vár ran
-            ;; glm-5p1 for eleven days after we "switched" to 5p2: the id had
+            ;; agent's stored config. An explicit override may record a family
+            ;; and version; an inheriting agent records no model selection. The
+            ;; concrete id is computed against the provider's availability
+            ;; catalog. This is why Vár ran glm-5p1 for eleven days after we
+            ;; "switched" to 5p2: the id had
             ;; been baked in at creation, and no code change could reach it.
             ;;
             ;; ONE function, shared with the UI. The inspector and the room

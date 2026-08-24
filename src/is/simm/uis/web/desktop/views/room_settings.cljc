@@ -124,7 +124,7 @@
                       ;; the picker itself lives one click away, on the agent's
                       ;; name.
                       (el/span {:class "settings-env-value settings-agent-model"
-                                :data-tooltip (str "Running "
+                                :data-tooltip (str "Resolves to "
                                                    (or (:model-short (:model-info agent)) "?")
                                                    " via "
                                                    (or (:provider-label (:model-info agent)) "?"))}

@@ -103,7 +103,7 @@
             ;; what used to print "—" for an agent following a family, next to
             ;; a provider it never chose.
             (let [{:keys [model candidate model-short choice-label provider-label no-reasoning?
-                          reasoning-copy reasoning-explanation inherited? available?
+                          reasoning-copy reasoning-explanation selection-label available?
                           availability-label availability-explanation]} chosen
                   display-model (or model candidate)]
               (el/div {:class "agent-inspector-section"}
@@ -113,15 +113,18 @@
                   ;; second name here is what produced "family latest" beside a
                   ;; list that says "(latest)".
                   (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Selection")
+                    (el/span {:class "agent-inspector-value"}
+                      selection-label))
+                  (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Model")
                     (el/span {:class "agent-inspector-value"}
-                      (str (or choice-label display-model "—")
-                           (when inherited? " · your default"))))
+                      (or choice-label display-model "—")))
                   ;; The short id, so every provider reads the same way here.
                   ;; The full id stays one hover away for the path-addressed
                   ;; ones.
                   (el/div {:class "agent-inspector-row"}
-                    (el/span {:class "agent-inspector-label"} "Running now")
+                    (el/span {:class "agent-inspector-label"} "Resolves to")
                     (el/span {:class (vc/class-names "agent-inspector-value"
                                                      "agent-inspector-value--mono"
                                                      (when (not= display-model model-short) "has-tooltip"))
@@ -163,14 +166,20 @@
                 ;; :value is the key, `:selected?` rides in the item. See the
                 ;; same list in settings.cljc for why the tick must not be part
                 ;; of the key.
-                (ifor-each :value
-                  (mapv (fn [c]
-                          (assoc c :selected?
-                                 (if (and (:family chosen) (:auto? chosen))
-                                   (= (:value c) (:family chosen))
-                                   (= (:value c) (or (:model chosen)
-                                                     (:candidate chosen))))))
-                        (:model-choices admin-data))
+                (let [override? (:configured? chosen)
+                      rows (into [(assoc (:inheritance-choice chosen)
+                                         :selected? (not override?))]
+                                 (map (fn [c]
+                                        (assoc c :selected?
+                                               (and override?
+                                                    (if (and (:family chosen)
+                                                             (:auto? chosen))
+                                                      (= (:value c) (:family chosen))
+                                                      (= (:value c)
+                                                         (or (:model chosen)
+                                                             (:candidate chosen))))))))
+                                 (:model-choices admin-data))]
+                  (ifor-each :value rows
                     (fn [row]
                       (model-picker/render-option
                        row
@@ -180,7 +189,7 @@
                            (s (fn [_] (reset! sig/admin-data nil))
                               (fn [err]
                                 (js/console.error
-                                 "[agent-inspector] model error:" err))))))))))
+                                 "[agent-inspector] model error:" err)))))))))))
 
             ;; System prompt section — always editable
             (let [prompt (or (:party/system-prompt agent-config) "")

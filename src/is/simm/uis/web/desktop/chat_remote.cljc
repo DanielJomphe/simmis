@@ -730,13 +730,7 @@
                tmpl       (when (seq tid) (templates/get-template tid))
                display    (if (seq aname) aname (or (:name tmpl) "Agent"))
                agent (parties/create-agent! owner-uuid
-                       (cond-> {:display-name display
-                                :auto-respond? true}
-                         ;; family + version, never a frozen id or a provider
-                         tmpl (merge {:template (:id tmpl)
-                                      :model-family (:model-family tmpl)
-                                      :model-version (:model-version tmpl)
-                                      :system-prompt (:system-prompt tmpl)})))]
+                                            (templates/agent-options display tmpl))]
            (rooms/add-party! room-uuid (:party/id agent))
            (when-let [slug (:room/slug (rooms/get-room room-uuid))]
              (room-agents/assign-room-agent!
@@ -751,20 +745,37 @@
       rejection path is directly testable."
      [agent-id-str agent-name model-choice system-prompt]
      (let [agent-uuid (java.util.UUID/fromString agent-id-str)
+           agent (parties/get-party agent-uuid)
            ;; ONE string, two meanings. A `*` marks a family, so the agent
            ;; follows it and picks up new releases; anything else is a pinned
            ;; id. Whichever arrives, the OTHER form is cleared.
-           model-patch (when (seq model-choice)
-                         ;; A forged/stale client must pass the exact same
-                         ;; availability decision as the picker and turn path.
-                         (model-catalog/require-available-choice! model-choice)
-                         (if (model-selection/family? model-choice)
-                           {:party/model-family model-choice
-                            :party/model-version :auto
-                            :party/model nil}
-                           {:party/model model-choice
-                            :party/model-family nil
-                            :party/model-version nil}))]
+           model-patch
+           (cond
+             (= model-catalog/inherit-choice-value model-choice)
+             (let [{:keys [value]} (room-agents/inheritance-choice agent)]
+               ;; Clearing is a selection too. Validate the owner's preference
+               ;; (or product fallback when the owner has none) before removing
+               ;; the explicit keys, so stale/forged clients fail closed.
+               (model-catalog/require-available-choice! value)
+               {:party/model nil
+                :party/model-family nil
+                :party/model-version nil
+                :party/provider nil})
+
+             (seq model-choice)
+             (do
+               ;; A forged/stale client must pass the exact same availability
+               ;; decision as the picker and turn path.
+               (model-catalog/require-available-choice! model-choice)
+               (if (model-selection/family? model-choice)
+                 {:party/model-family model-choice
+                  :party/model-version :auto
+                  :party/model nil}
+                 {:party/model model-choice
+                  :party/model-family nil
+                  :party/model-version nil}))
+
+             :else nil)]
        (parties/update-agent! agent-uuid
          (cond-> {}
            (seq agent-name) (assoc :party/display-name agent-name)

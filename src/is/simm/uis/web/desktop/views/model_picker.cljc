@@ -73,6 +73,8 @@
          {:key value
           :class (vc/class-names "settings-model-option"
                                  (when selected? "selected")
+                                 (when (= kind :inheritance)
+                                   "settings-model-option--inheritance")
                                  (when disabled? "settings-model-option--disabled"))
           :role (:role attrs)
           :tabindex (:tabindex attrs)

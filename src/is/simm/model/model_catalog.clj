@@ -34,6 +34,10 @@
    {:model "claude-sonnet-4-6" :label "Claude Sonnet 4.6" :provider "anthropic"}
    {:model "claude-opus-4-7" :label "Claude Opus 4.7" :provider "anthropic"}])
 
+(def inherit-choice-value
+  "Sentinel sent by the first-class agent picker row that clears an override."
+  "__inherit-owner-preference__")
+
 (defn- version-label
   "A version token as a person writes it. `5p2` is Fireworks' spelling of 5.2,
    and `k2p6` of K2.6."
@@ -54,7 +58,7 @@
   "A model id as a person reads it.
 
    Fireworks addresses a model by path, `accounts/fireworks/models/glm-5p2`,
-   while OpenAI uses a bare `gpt-5.6-luna`. Printed raw, one `Running now` row
+   while OpenAI uses a bare `gpt-5.6-luna`. Printed raw, one resolved-model row
    showed a path and the next showed a name, for the same kind of fact. The
    prefix carries no information the Provider row does not already give."
   [id]

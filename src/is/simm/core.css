@@ -7335,6 +7335,15 @@ body.tab-dragging .column-drop-zone {
   background: var(--accent-subtle);
 }
 
+.settings-model-option--inheritance {
+  margin-bottom: var(--spacing-xs);
+  border-style: dashed;
+}
+
+.settings-model-option--inheritance.selected {
+  border-style: solid;
+}
+
 .settings-model-name {
   font-size: var(--text-sm);
   font-weight: 500;

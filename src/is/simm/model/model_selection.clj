@@ -10,9 +10,11 @@
    creation cannot be corrected by changing code; it can only be migrated, and
    nobody remembers to write the migration.
 
-   So: an agent stores what the HUMAN chose — a family, and either a pinned
-   version or :auto — and the concrete id is computed when the participant is
-   joined or rejoined. A new release is picked up by restarting, not by a
+   So: an agent stores a model only when a HUMAN explicitly overrides its
+   owner's preference — a family with a pinned version or :auto, or an exact
+   id. With no override it stores no model keys and follows owner preference,
+   then the product fallback. The concrete id is computed when the participant
+   is joined or rejoined. A new release is picked up by restarting, not by a
    migration.
 
    FAMILY is the id with its version slot blanked, which makes it provider-shaped
@@ -511,8 +513,8 @@
 ;; ---------------------------------------------------------------------------
 
 (def default-family
-  "Family a new agent gets. The VERSION is deliberately not part of this — that
-   is the whole point (see the ns docstring)."
+  "Family form of `default-model`, for callers making an explicit family
+   selection. New agents inherit instead of storing this value."
   (or (family-of default-model)
       "accounts/fireworks/models/glm-*"))
 
