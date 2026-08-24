@@ -2035,43 +2035,9 @@
 ;; Provider resolution + billing
 ;; =============================================================================
 
-(def ^:private models-dev-timeout-ms 10000)
-
-(defonce ^:private openai-catalog
-  ;; dvergr's registry ships Anthropic built-ins plus the Fireworks set from
-  ;; its models.edn — and nothing for OpenAI. The turn path resolves a model
-  ;; with `registry/get-model!`, which THROWS on an unknown id, so an
-  ;; OPENAI_API_KEY alone bought a registered provider that no model could
-  ;; reach. This is dvergr's own answer to that (see `refresh-from-models-dev!`
-  ;; — "pick up new model releases without recompiling"): one overlay of
-  ;; <https://models.dev> at first use, carrying live pricing and context
-  ;; limits for the whole current GPT line.
-  ;;
-  ;; :openai ONLY. The overlay REPLACES a registry entry, and on released
-  ;; dvergr that drops the entry's :quirks — harmless where nothing was
-  ;; registered, destructive over the Anthropic built-ins that carry
-  ;; :thinking-budget?.
-  ;;
-  ;; A delay over a future: the fetch is `slurp` on a URL, which has no
-  ;; timeout of its own, and no boot should hang on a third-party catalog.
-  ;; Past the deadline the registry keeps whatever it had — one OpenAI turn
-  ;; may fail on an unknown id, and the fetch still lands for the next.
-  (delay
-    (let [result (deref (future
-                          (try (registry/refresh-from-models-dev! #{:openai})
-                               (catch Throwable t
-                                 (log/log! {:level :warn :id ::models-dev-refresh-failed
-                                            :data {:error (ex-message t)}})
-                                 nil)))
-                        models-dev-timeout-ms ::timeout)]
-      (log/log! {:level :info :id ::openai-catalog-loaded
-                 :data {:models result}})
-      result)))
-
 (defn- ensure-providers! []
   (when (empty? (providers/list-providers))
-    (providers/init-defaults!))
-  @openai-catalog)
+    (providers/init-defaults!)))
 
 (defn resolve-provider
   "Which provider serves `model`.
@@ -2125,7 +2091,10 @@
            :provider provider
            :provider-label ((requiring-resolve 'is.simm.model.model-catalog/provider-label) provider)
            :model-short ((requiring-resolve 'is.simm.model.model-catalog/short-id) model)
-           :no-reasoning? (boolean (registry/get-quirk model :chat-tools-need-effort-none?))
+           :no-reasoning?
+           ((requiring-resolve
+             'is.simm.model.model-catalog/reasoning-disabled-for-tools?)
+            provider model)
            :label (or (:name (registry/get-model model)) model)} info
       ;; The label the PICKER uses for this same choice. The configuration panel
       ;; prints it verbatim, so the two cannot drift into separate vocabularies

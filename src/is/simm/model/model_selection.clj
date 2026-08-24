@@ -28,8 +28,10 @@
    list we maintain.
 
    The CATALOG spans every OpenAI-compatible endpoint this machine has a key for
-   — Fireworks and OpenAI both, merged — so a family resolves against the
-   provider that actually serves it."
+   — Fireworks and OpenAI both — while retaining which provider, credential and
+   base URL produced every model id. Availability is endpoint-local: one
+   provider going dark cannot erase another provider's answer or turn stale ids
+   into claims that they are currently reachable."
   (:require [clojure.string :as str]
             [taoensso.telemere :as log]))
 
@@ -95,10 +97,23 @@
 
 (def ^:private catalog-ttl-ms (* 10 60 1000))
 
-(defonce ^:private catalog-cache (atom {:at 0 :ids nil}))
+(defonce ^:private catalog-cache
+  (atom {:at 0 :configuration [] :endpoints {}}))
 
 (def ^:private openai-base "https://api.openai.com/v1")
 (def ^:private fireworks-base "https://api.fireworks.ai/inference/v1")
+
+(def ^:dynamic *env-lookup*
+  "Environment lookup seam. Tests bind this to a map so catalog verification
+   never depends on, or discloses, developer credentials."
+  #(System/getenv %))
+
+(def ^:dynamic *provider-base-urls*
+  "Default provider bases. Tests bind these to local HTTP fixtures; production
+   uses the vendors' documented endpoints. OPENAI_BASE_URL, when present, still
+   overrides only the OpenAI entry."
+  {:openai openai-base
+   :fireworks fireworks-base})
 
 (def ^:private snapshot-id-re
   ;; gpt-5.5-2026-04-23 — a dated snapshot of a model we already list under its
@@ -107,91 +122,192 @@
   ;; that exist only because a snapshot id got split apart.
   #".*-\d{4}-\d{2}-\d{2}$")
 
-(defn- endpoints
-  "Every OpenAI-compatible /models endpoint this machine is configured for,
-   as {base-url api-key}.
+(defn- normalize-base-url [base]
+  (str/replace (str base) #"/+$" ""))
 
-   Two, not one. `OPENAI_BASE_URL` used to be REQUIRED here, so the normal way
-   to hold an OpenAI key — the key alone — fetched nothing at all: the catalog
-   stayed empty, and an empty catalog makes every `:auto` selection fall back
-   to `default-model` while logging that the family isn't on offer. And a
-   machine holding both keys serves both families, so asking one endpoint
-   would strand the other's agents.
+(defn- configured-endpoints
+  "Every configured OpenAI-protocol endpoint as provider-aware records.
 
-   Keyed by base url, so an `OPENAI_BASE_URL` aimed at Fireworks (or at a
-   local endpoint) collapses into one entry instead of being asked twice."
+   Provider identity is configuration, never inferred from the URL. This is
+   why OPENAI_BASE_URL may equal Fireworks' base without either entry replacing
+   the other. Each entry reads exactly one named credential; keys are never
+   borrowed across providers.
+
+   `:endpoint-kind` distinguishes native OpenAI from OpenAI-compatible request
+   behavior. The credential itself is intentionally private to this fetch
+   boundary and is never copied into catalog results or cache state."
   []
-  (let [base (System/getenv "OPENAI_BASE_URL")]
-    (cond-> {}
-      (System/getenv "FIREWORKS_API_KEY")
-      (assoc fireworks-base (System/getenv "FIREWORKS_API_KEY"))
+  (let [openai-key (*env-lookup* "OPENAI_API_KEY")
+        fireworks-key (*env-lookup* "FIREWORKS_API_KEY")
+        custom-openai-base (*env-lookup* "OPENAI_BASE_URL")]
+    (cond-> []
+      (seq fireworks-key)
+      (conj {:provider :fireworks
+             :base-url (normalize-base-url (:fireworks *provider-base-urls*))
+             :credential-source "FIREWORKS_API_KEY"
+             :endpoint-kind :openai-compatible
+             :native-openai? false
+             :credential fireworks-key})
 
-      (System/getenv "OPENAI_API_KEY")
-      (assoc (or base openai-base) (System/getenv "OPENAI_API_KEY")))))
+      (seq openai-key)
+      (conj {:provider :openai
+             :base-url (normalize-base-url
+                        (or (not-empty custom-openai-base)
+                            (:openai *provider-base-urls*)))
+             :credential-source "OPENAI_API_KEY"
+             :endpoint-kind (if (seq custom-openai-base)
+                              :openai-compatible
+                              :openai-native)
+             :native-openai? (not (seq custom-openai-base))
+             :credential openai-key}))))
+
+(def ^:private public-endpoint-keys
+  [:provider :base-url :credential-source :endpoint-kind :native-openai?])
+
+(defn- public-endpoint [endpoint]
+  (select-keys endpoint public-endpoint-keys))
+
+(defn provider-endpoints
+  "Configured provider endpoint records, without credential values. The named
+   `:credential-source` is safe to inspect; the secret itself never leaves the
+   private fetch boundary."
+  []
+  (mapv public-endpoint (configured-endpoints)))
+
+(defn- endpoint-key [endpoint]
+  [(:provider endpoint) (:base-url endpoint) (:credential-source endpoint)])
+
+(defn- model-record [endpoint model-id reachability]
+  (assoc (public-endpoint endpoint)
+         :model-id model-id
+         :reachability reachability
+         :reachable? (= :reachable reachability)))
 
 (defn- fetch-endpoint!
-  "Model ids one OpenAI-compatible endpoint serves, or nil when it can't be
-   reached."
-  [base key]
+  "Model ids one OpenAI-compatible endpoint serves, or nil when it cannot be
+   reached or does not return the documented `{:data [{:id ...}]}` shape."
+  [{:keys [base-url credential] :as endpoint}]
   (try
     (let [resp ((requiring-resolve 'babashka.http-client/get)
-                (str base "/models")
-                {:headers {"Authorization" (str "Bearer " key)}
+                (str base-url "/models")
+                {:headers {"Authorization" (str "Bearer " credential)}
                  :timeout 10000})
           body ((requiring-resolve 'jsonista.core/read-value)
                 (:body resp)
-                ((requiring-resolve 'jsonista.core/object-mapper) {:decode-key-fn true}))]
-      (->> (:data body)
+                ((requiring-resolve 'jsonista.core/object-mapper) {:decode-key-fn true}))
+          data (:data body)]
+      (when-not (<= 200 (:status resp) 299)
+        (throw (ex-info "Model endpoint returned a non-success status"
+                        {:status (:status resp)})))
+      (when-not (sequential? data)
+        (throw (ex-info "Model endpoint response has no data list" {})))
+      (->> data
            (map :id)
            (remove nil?)
            (remove #(re-matches snapshot-id-re %))
-           vec
-           seq))
+           distinct
+           vec))
     (catch Throwable t
       (log/log! {:level :warn :id ::catalog-fetch-failed
-                 :data {:base base :error (ex-message t)}})
+                 :data {:provider (:provider endpoint)
+                        :base-url base-url
+                        :credential-source (:credential-source endpoint)
+                        :error (ex-message t)}})
       nil)))
 
-(defn- fetch-catalog!
-  "Model ids the configured providers currently serve, merged. nil when no
-   endpoint answered — the caller keeps its last good answer rather than
-   treating a network failure as an empty catalog."
-  []
-  (seq (into [] (comp (map (fn [[base key]] (fetch-endpoint! base key)))
-                      (remove nil?)
-                      cat)
-             (endpoints))))
+(defn- refresh-endpoint
+  "Refresh one provider without disturbing any other provider's state.
 
-(defn catalog
-  "Cached model catalog. Falls back to the last good answer, then to the
-   configured default — an agent must still be able to run when the provider's
-   model list is unreachable."
-  ([] (catalog false))
-  ([force?]
-   (let [{:keys [at ids]} @catalog-cache
-         fresh? (and ids (< (- (System/currentTimeMillis) at) catalog-ttl-ms))]
-     (if (and fresh? (not force?))
-       ids
-       (if-let [fetched (fetch-catalog!)]
-         (do (reset! catalog-cache {:at (System/currentTimeMillis) :ids fetched})
-             fetched)
-         (or ids [default-model]))))))
+   A failed fetch retains only that exact endpoint's last-known ids and marks
+   them unreachable. With no last-known-good state it returns no model records;
+   a configured key or a code default is not evidence of availability."
+  [endpoint previous]
+  (if-some [ids (fetch-endpoint! endpoint)]
+    {:endpoint (public-endpoint endpoint)
+     :last-success-at (System/currentTimeMillis)
+     :models (mapv #(model-record endpoint % :reachable) ids)}
+    {:endpoint (public-endpoint endpoint)
+     :last-success-at (:last-success-at previous)
+     :models (mapv #(assoc % :reachability :unreachable :reachable? false)
+                   (:models previous))}))
 
-(defn versions-in
-  "Versions of `family` the provider offers, newest first."
-  [family]
-  (->> (catalog)
-       (filter #(= family (family-of %)))
-       (map version-of)
-       (sort-by version-key #(compare %2 %1))
+(defn- catalog-records [cache]
+  (->> (:endpoints cache)
+       vals
+       (mapcat :models)
        vec))
 
-(defn- registered?
-  "Does dvergr's registry carry this id? A model has to be in BOTH places to be
-   usable: the provider's catalog says it can be reached, the registry says what
-   its context window is and what it costs."
-  [id]
-  (boolean ((requiring-resolve 'dvergr.model.registry/get-model) id)))
+(defn reset-catalog!
+  "Forget cached provider results. Intended for explicit configuration changes
+   and deterministic tests; normal callers use the TTL or `(catalog true)`."
+  []
+  (reset! catalog-cache {:at 0 :configuration [] :endpoints {}}))
+
+(defn catalog
+  "Provider-aware model records from configured `/models` endpoints.
+
+   Successful records are reachable now. Failed providers retain their own
+   last-known ids as `:reachability :unreachable`; consumers deciding what is
+   available must use `available-catalog`. There is deliberately no default-id
+   fallback: configuration and registry knowledge do not prove reachability."
+  ([] (catalog false))
+  ([force?]
+   (let [endpoints (configured-endpoints)
+         configuration (mapv endpoint-key endpoints)
+         {:keys [at] :as cached} @catalog-cache
+         fresh? (and (= configuration (:configuration cached))
+                     (< (- (System/currentTimeMillis) at) catalog-ttl-ms))]
+     (if (and fresh? (not force?))
+       (catalog-records cached)
+       (let [previous (:endpoints cached)
+             endpoint-states
+             (into {}
+                   (map (fn [endpoint]
+                          (let [k (endpoint-key endpoint)]
+                            [k (refresh-endpoint endpoint (get previous k))])))
+                   endpoints)
+             refreshed {:at (System/currentTimeMillis)
+                        :configuration configuration
+                        :endpoints endpoint-states}]
+         (reset! catalog-cache refreshed)
+         (catalog-records refreshed))))))
+
+(defn available-catalog
+  "Catalog records whose provider answered the current fetch successfully."
+  []
+  (filterv :reachable? (catalog)))
+
+(defn available-model?
+  "Whether `model-id` is currently returned by `/models`.
+
+   With a provider, require that exact provider record. Without one, prefer the
+   provider dvergr registered for the id; unknown ids may match any configured
+   provider so custom OpenAI-compatible deployments remain usable."
+  ([model-id]
+   (let [registered-provider
+         (some-> ((requiring-resolve 'dvergr.model.registry/get-model) model-id)
+                 :provider)]
+     (available-model? registered-provider model-id)))
+  ([provider model-id]
+   (boolean
+    (some #(and (= model-id (:model-id %))
+                (or (nil? provider) (= (keyword provider) (:provider %))))
+          (available-catalog)))))
+
+(defn versions-in
+  "Versions of `family` currently offered, newest first. With `provider`, only
+   that provider's endpoint contributes versions."
+  ([family]
+   (versions-in nil family))
+  ([provider family]
+   (->> (available-catalog)
+        (filter #(or (nil? provider) (= (keyword provider) (:provider %))))
+        (map :model-id)
+        (filter #(= family (family-of %)))
+        (map version-of)
+        distinct
+        (sort-by version-key #(compare %2 %1))
+        vec)))
 
 (defn newest-usable
   "Newest version of `family` that the provider serves AND the registry knows.
@@ -203,19 +319,35 @@
 
    Falls back to the newest served when the registry knows none of them, which
    is the state of a registry that has not loaded yet."
-  [family]
-  (let [vs (versions-in family)
-        known (filter #(registered? (id-for family %)) vs)]
-    (when (and (seq vs) (seq known) (not= (first vs) (first known)))
-      (log/log! {:level :info :id ::newer-version-not-registered
-                 :data {:family family :serving (first vs) :using (first known)}}))
-    (or (first known) (first vs))))
+  ([family]
+   (newest-usable nil family))
+  ([provider family]
+   (let [vs (versions-in provider family)
+         known (filter
+                (fn [version]
+                  (let [id (id-for family version)
+                        registered-provider
+                        (some-> ((requiring-resolve 'dvergr.model.registry/get-model) id)
+                                :provider)]
+                    (and registered-provider
+                         (or (nil? provider)
+                             (= (keyword provider) registered-provider))
+                         (available-model? registered-provider id))))
+                vs)]
+     (when (and (seq vs) (seq known) (not= (first vs) (first known)))
+       (log/log! {:level :info :id ::newer-version-not-registered
+                  :data {:provider provider
+                         :family family
+                         :serving (first vs)
+                         :using (first known)}}))
+     (or (first known) (first vs)))))
 
 (defn families
   "Families on offer → {family [versions newest-first]}. Powers a UI picker:
    choose the family, then :auto or a pinned version."
   []
-  (->> (catalog)
+  (->> (available-catalog)
+       (map :model-id)
        (keep family-of)
        distinct
        (map (fn [f] [f (versions-in f)]))
@@ -242,7 +374,7 @@
    A pinned version that the provider has withdrawn resolves to the newest in
    its family instead of 404-ing the turn — being one minor version off beats
    an agent that cannot speak."
-  [{:keys [model family version] :as selection}]
+  [{:keys [model family version provider] :as selection}]
   (cond
     ;; explicit id wins — nothing to resolve
     (and model (not family)) model
@@ -256,7 +388,7 @@
     nil
 
     (or (nil? version) (= version :auto) (= version "auto"))
-    (if-let [newest (newest-usable family)]
+    (if-let [newest (newest-usable provider family)]
       (id-for family newest)
       (do (log/log! {:level :warn :id ::family-not-in-catalog
                      :data {:family family :falling-back-to default-model}})
@@ -264,9 +396,9 @@
 
     :else
     (let [id (id-for family version)]
-      (if (some #{id} (catalog))
+      (if (available-model? provider id)
         id
-        (let [newest (newest-usable family)]
+        (let [newest (newest-usable provider family)]
           (log/log! {:level :warn :id ::pinned-version-unavailable
                      :data {:selection selection :pinned id :using (when newest (id-for family newest))}})
           (if newest (id-for family newest) default-model))))))

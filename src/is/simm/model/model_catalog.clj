@@ -78,10 +78,37 @@
        "and editing, search, tests. This model refuses tool calls unless its "
        "reasoning is switched off, so simmis switches it off and keeps the tools."))
 
-(defn- registered? [id] (boolean (registry/get-model id)))
+(def ^:private endpoint-catalog-providers #{:openai :fireworks})
 
-(defn- no-reasoning? [id]
-  (boolean (registry/get-quirk id :chat-tools-need-effort-none?)))
+(defn- registered?
+  ([id] (boolean (registry/get-model id)))
+  ([provider id]
+   (= (keyword provider) (:provider (registry/get-model id)))))
+
+(defn- provenance
+  "Endpoint facts for a currently available provider/model pair. Picker rows
+   retain these instead of flattening availability back to an unscoped id."
+  [provider id]
+  (some #(when (and (= (keyword provider) (:provider %))
+                    (= id (:model-id %)))
+           (select-keys % [:base-url :credential-source :reachability
+                           :reachable? :model-id :endpoint-kind
+                           :native-openai?]))
+        (ms/available-catalog)))
+
+(defn reasoning-disabled-for-tools?
+  "Whether the configured provider will apply this model's tools workaround.
+
+   The registry identifies affected OpenAI models. dvergr deliberately applies
+   the workaround only to native OpenAI requests; a custom OPENAI_BASE_URL is
+   merely protocol-compatible and must not receive an OpenAI-native field."
+  [provider id]
+  (let [provider (keyword provider)
+        endpoint (some #(when (= provider (:provider %)) %) (ms/provider-endpoints))]
+    (boolean
+     (and (registry/get-quirk id :chat-tools-need-effort-none?)
+          (or (not= :openai provider)
+              (:native-openai? endpoint))))))
 
 (defn reasoning-copy
   "The words a screen shows for this model's reasoning, plus the tooltip."
@@ -92,11 +119,9 @@
 (def ^:private max-versions
   "How many pinned versions to offer under a family.
 
-   The models.dev overlay registers everything OpenAI currently serves, so the
-   bare `gpt-*` family knows seven versions back to gpt-4. A picker is a
-   shortlist, not an archive: two keeps `latest` plus the one you would roll
-   back to. Anything older is still reachable by writing the id into the
-   agent's config."
+   A picker is a shortlist, not an archive: two keeps `latest` plus the one you
+   would roll back to. Anything older is still reachable by writing the id into
+   the agent's config."
   2)
 
 (defn- family-rows
@@ -105,27 +130,32 @@
    the current keys cannot reach drops out of the picker instead of being
    offered and then failing at turn time."
   [{:keys [family label provider]}]
-  (let [versions (->> (ms/versions-in family)
-                      (filter #(registered? (ms/id-for family %)))
+  (let [versions (->> (ms/versions-in provider family)
+                      (filter #(registered? provider (ms/id-for family %)))
                       (take max-versions))]
     (when-let [latest (first versions)]
-      (into [{:kind :family
-              :value family
-              :label (str label " (latest)")
-              :provider provider
-              :provider-label (provider-label provider)
-              :resolves (ms/id-for family latest)
-              :no-reasoning? (no-reasoning? (ms/id-for family latest))}]
+      (let [latest-id (ms/id-for family latest)]
+        (into [(merge
+                {:kind :family
+                 :value family
+                 :label (str label " (latest)")
+                 :provider provider
+                 :provider-label (provider-label provider)
+                 :resolves latest-id
+                 :no-reasoning? (reasoning-disabled-for-tools? provider latest-id)}
+                (provenance provider latest-id))]
             (map (fn [v]
                    (let [id (ms/id-for family v)]
-                     {:kind :version
-                      :value id
-                      :label (str label " " (version-label v))
-                      :provider provider
-                      :provider-label (provider-label provider)
-                      :resolves id
-                      :no-reasoning? (no-reasoning? id)}))
-                 versions)))))
+                     (merge
+                      {:kind :version
+                       :value id
+                       :label (str label " " (version-label v))
+                       :provider provider
+                       :provider-label (provider-label provider)
+                       :resolves id
+                       :no-reasoning? (reasoning-disabled-for-tools? provider id)}
+                      (provenance provider id))))
+                 versions))))))
 
 (defn choices
   "Every row a model picker should show, in order. Each row carries its own
@@ -135,14 +165,19 @@
         (mapcat (fn [{:keys [family model label provider] :as entry}]
                   (cond
                     family (family-rows entry)
-                    (and model (registered? model))
-                    [{:kind :model
-                      :value model
-                      :label label
-                      :provider provider
-                      :provider-label (provider-label provider)
-                      :resolves model
-                      :no-reasoning? (no-reasoning? model)}]
+                    (and model
+                         (registered? model)
+                         (or (not (endpoint-catalog-providers (keyword provider)))
+                             (ms/available-model? provider model)))
+                    [(merge
+                      {:kind :model
+                       :value model
+                       :label label
+                       :provider provider
+                       :provider-label (provider-label provider)
+                       :resolves model
+                       :no-reasoning? (reasoning-disabled-for-tools? provider model)}
+                      (provenance provider model))]
                     :else []))
                 curated)))
 

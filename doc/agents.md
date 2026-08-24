@@ -85,20 +85,29 @@ Agents call an LLM through a provider key from the environment —
 registered only when its key is present. `OPENAI_API_KEY` on its own talks to
 OpenAI; `OPENAI_BASE_URL` re-points that key at any other OpenAI-compatible
 endpoint, including a local one. Each agent's model can be set per room in its
-settings.
+settings. Fireworks always uses its own base and `FIREWORKS_API_KEY`: provider
+credentials are never borrowed, even when two provider records have the same
+URL. Supplying `OPENAI_BASE_URL` also marks that record OpenAI-compatible rather
+than native OpenAI, so provider-specific request behavior remains explicit.
 
 An agent stores a model FAMILY (`gpt-*-luna`, `accounts/fireworks/models/glm-*`)
 and either a pinned version or `:auto`; the concrete id is resolved on every
-turn against the live `/models` catalogs of the endpoints the keys reach
-(`is.simm.model.model-selection`). An agent that stores neither follows its
-OWNER's preference from Settings, then the code default.
+turn against `/models`, which answers which model ids that credential can
+currently reach (`is.simm.model.model-selection`). It does not supply pricing,
+context limits or capability metadata. Each returned id retains its provider,
+base URL, credential source and reachability; identical URLs therefore remain
+two records. If one fetch fails, only that provider's last-known ids survive,
+marked unreachable and omitted from availability-driven picker rows. An agent
+that stores neither follows its OWNER's preference from Settings, then the code
+default.
 
 A model must also exist in dvergr's registry, which is where its context window
-and its price per token come from — an unregistered id fails the turn rather
-than running at an unknown cost. `:auto` therefore picks the newest version that
-the provider serves AND the registry knows: Fireworks was serving kimi-k3 while
-the registry stopped at k2p6, and one version behind beats a turn that cannot
-start.
+capabilities and price per token come from — an unregistered id fails the turn
+rather than running at an unknown cost. `:auto` therefore picks the newest
+version that the provider serves AND the registry knows: Fireworks was serving
+kimi-k3 while the registry stopped at k2p6, and one version behind beats a turn
+that cannot start. No third-party metadata refresh runs in the first agent turn;
+dvergr's registry is the metadata source from process start.
 
 The PROVIDER is derived from the model, never stored beside it. A stored
 provider is a second thing to keep in sync, and it used to win: every agent
@@ -108,7 +117,9 @@ resolves model, provider and version together, and both the agent inspector and
 the room settings render exactly what it returns, so no screen can disagree with
 a turn.
 
-One provider quirk is load-bearing here: on `/v1/chat/completions`, OpenAI's
-GPT-5.6 models refuse function tools unless `reasoning_effort` is `"none"`.
-dvergr sends that for them, so tools work and server-side reasoning does not.
-Agents that need both belong on `gpt-5.5` until the Responses API is spoken.
+One native-provider quirk is load-bearing here: on OpenAI's configured
+`/v1/chat/completions` path, the GPT-5.6 entries require `reasoning_effort`
+`"none"` when tools are attached. dvergr sends that only to native OpenAI, so
+tools work and server-side reasoning does not; an arbitrary compatible endpoint
+does not receive an OpenAI-native field. Agents that need both belong on
+`gpt-5.5` until the Responses API is spoken.

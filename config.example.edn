@@ -65,11 +65,15 @@
 ;;   ANTHROPIC_API_KEY   accounts/fireworks/models/glm-5p2 — so FIREWORKS_API_KEY
 ;;                       is the least-effort option. Set several; each agent
 ;;                       picks its own model, and the provider follows from it.
+;;                       Keys are provider-scoped: OpenAI never supplies a
+;;                       Fireworks credential, or vice versa.
 ;;
 ;;   OPENAI_BASE_URL     Where OPENAI_API_KEY points. UNSET means OpenAI itself
 ;;                       (https://api.openai.com/v1) — the gpt-5.6 / gpt-5.5
 ;;                       models. Set it to reach any other OpenAI-compatible
 ;;                       endpoint, including a local one, with that same key.
+;;                       It never changes Fireworks' base. A supplied base is
+;;                       treated as compatible, not as native OpenAI behavior.
 ;;
 ;;   SIMMIS_JITSI_URL    Jitsi deployment backing the :video tab.
 ;;                       Default http://localhost:9100.

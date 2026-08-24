@@ -114,8 +114,9 @@ registered only when its key is present. The fallback model is
 `accounts/fireworks/models/glm-5p2`, so `FIREWORKS_API_KEY` is the path of least
 resistance. `OPENAI_API_KEY` on its own reaches OpenAI (the GPT-5.6 and GPT-5.5
 models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
-endpoint, including a local one. Each agent's model can also be set per room in
-its settings.
+endpoint, including a local one. Fireworks always uses its own base and
+`FIREWORKS_API_KEY`; credentials are never shared between providers. Each
+agent's model can also be set per room in its settings.
 
 ### Production build
 
