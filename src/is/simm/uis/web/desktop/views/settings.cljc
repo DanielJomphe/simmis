@@ -9,6 +9,7 @@
    5. Usage & Budget (remaining, breakdown)"
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as sr])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
@@ -226,38 +227,18 @@
               (mapv (fn [c]
                       (assoc c :selected? (= (:value c) (:party/preferred-model profile))))
                     (:model-choices data))
-              (fn [{:keys [value label kind provider-label no-reasoning?
-                           reasoning-copy reasoning-explanation selected?]}]
-                (el/div {:key value
-                           :class (vc/class-names "settings-model-option"
-                                                  (when selected? "selected"))
-                           :on-click (fn [_]
-                                       #?(:cljs
-                                          (when-let [user @sig/current-user]
-                                            (let [s (sr/save-preferred-model!
-                                                      web/server-id (:id user) value)]
-                                              (s (fn [_]
-                                                   (reload-settings!))
-                                                 (fn [err] (js/console.error "[settings] save error:" err)))))
-                                          :clj nil))}
-                    (el/div {:class (vc/class-names "settings-model-name"
-                                                    (when (= kind :version)
-                                                      "settings-model-name--version"))}
-                      label)
-                    (when no-reasoning?
-                      ;; :data-tooltip, not :title. A native title tooltip is
-                      ;; drawn by the OS: it waits a second, ignores our
-                      ;; styling, never appears on touch, and cannot be captured
-                      ;; in a screenshot for docs. This one is a ::after on
-                      ;; hover. Both the words and the explanation come from the
-                      ;; server, so this row and the agent's configuration panel
-                      ;; say the same thing.
-                      (el/div {:class "settings-model-tag"
-                               :data-tooltip reasoning-explanation}
-                        (str "reasoning " reasoning-copy)))
-                    (el/div {:class "settings-model-provider"} provider-label)
-                    (when selected?
-                      (vc/icon "check" {:class "settings-model-check"})))))))
+              (fn [row]
+                (model-picker/render-option
+                 row
+                 (fn [value]
+                   #?(:cljs
+                      (when-let [user @sig/current-user]
+                        (let [s (sr/save-preferred-model!
+                                 web/server-id (:id user) value)]
+                          (s (fn [_] (reload-settings!))
+                             (fn [err]
+                               (js/console.error "[settings] save error:" err)))))
+                      :clj nil)))))))
 
         ;; --- Code View Section ---
         (let [current-syntax (or (get-in data [:ui-prefs :ui-pref/syntax]) :clojure)]

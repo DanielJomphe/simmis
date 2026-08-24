@@ -1,5 +1,6 @@
 (ns is.simm.model.model-selection-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [dvergr.model.registry :as registry]
             [is.simm.model.fake-models-server :as fake]
             [is.simm.model.model-selection :as selection]))
 
@@ -9,8 +10,22 @@
 (use-fixtures
   :each
   (fn [f]
-    (selection/reset-catalog!)
-    (try (f) (finally (selection/reset-catalog!)))))
+    (let [before @registry/registry]
+      (selection/reset-catalog!)
+      (registry/register-model!
+       {:id "accounts/fireworks/models/glm-5p2"
+        :name "GLM 5.2"
+        :provider :fireworks
+        :api-type :openai-chat
+        :capabilities #{:tools :streaming :system-prompt}
+        :context 131072
+        :max-output 8192
+        :pricing {:input 1 :output 1}
+        :quirks {}})
+      (try (f)
+           (finally
+             (reset! registry/registry before)
+             (selection/reset-catalog!))))))
 
 (defn- fixture-bases [base-url]
   {:openai (str base-url "/openai")
@@ -34,6 +49,87 @@
   (is (= "gpt-*-luna" (selection/family-of "gpt-5.6-luna")))
   (is (= "accounts/fireworks/models/glm-*"
          (selection/family-of "accounts/fireworks/models/glm-5p2"))))
+
+(deftest pure-availability-state-matrix
+  (let [base {:provider-known? true
+              :credential-present? true
+              :registered? true
+              :implemented? true
+              :catalog-required? true
+              :catalog-reachability :reachable
+              :served? true}
+        cases [["served + registered + implemented"
+                {}
+                :available]
+               ["missing provider credential"
+                {:credential-present? false}
+                :needs-credential]
+               ["served + unregistered"
+                {:registered? false}
+                :not-implemented]
+               ["registered + adapter gap"
+                {:implemented? false}
+                :not-implemented]
+               ["registered + not served"
+                {:served? false}
+                :unavailable-to-account]
+               ["neither served nor registered"
+                {:registered? false :served? false}
+                :not-implemented]
+               ["transient catalog failure"
+                {:catalog-reachability :temporarily-unreachable}
+                :temporarily-unreachable]
+               ["provider without a catalog endpoint"
+                {:catalog-required? false
+                 :catalog-reachability :not-required
+                 :served? false}
+                :available]
+               ["unknown provider/adapter"
+                {:provider-known? false}
+                :not-implemented]]]
+    (doseq [[label overrides expected] cases]
+      (testing label
+        (is (= expected
+               (selection/availability-state (merge base overrides)))))))
+
+  (is (= :registry-missing
+         (selection/availability-reason
+          {:provider-known? true :credential-present? true
+           :registered? false :implemented? false
+           :catalog-required? true :catalog-reachability :reachable
+           :served? true})))
+  (is (= :adapter-missing
+         (selection/availability-reason
+          {:provider-known? true :credential-present? true
+           :registered? true :implemented? false
+           :catalog-required? true :catalog-reachability :reachable
+           :served? true}))))
+
+(deftest resolution-never-substitutes-an-unavailable-pin
+  (let [state (fn [id]
+                {:state (if (= id "gpt-5.5") :available :unavailable-to-account)
+                 :available? (= id "gpt-5.5")
+                 :provider :openai
+                 :model-id id})]
+    (with-redefs [selection/known-versions-in (fn [_ _] ["5.6" "5.5"])
+                  selection/model-availability (fn
+                                                 ([id] (state id))
+                                                 ([_ id] (state id)))]
+      (testing "latest has an explicit within-family meaning"
+        (is (= "gpt-5.5"
+               (selection/resolve-model {:provider :openai
+                                         :family "gpt-*"
+                                         :version :auto}))))
+      (testing "a withdrawn pin fails closed instead of becoming latest"
+        (let [result (selection/resolve-selection {:provider :openai
+                                                   :family "gpt-*"
+                                                   :version "5.6"})]
+          (is (= "gpt-5.6" (:candidate result)))
+          (is (nil? (:model result)))
+          (is (false? (:available? result)))))
+      (testing "an unavailable exact id does not become the code default"
+        (is (nil? (selection/resolve-model {:provider :openai
+                                            :model "gpt-5.6"})))))))
 
 (deftest no-keys-do-not-invent-availability
   (fake/with-server
@@ -154,7 +250,18 @@
                   (:model-id (:fireworks records))))
            (is (= :unreachable (:reachability (:fireworks records))))
            (is (= ["gpt-5.6-luna"]
-                  (mapv :model-id (selection/available-catalog))))))))))
+                  (mapv :model-id (selection/available-catalog))))
+           (is (= #{"accounts/fireworks/models/glm-5p2"}
+                  (:served-model-ids
+                   (selection/provider-catalog-status :fireworks)))
+               "last-known served evidence is retained")
+           (is (= :temporarily-unreachable
+                  (:state
+                   (selection/model-availability
+                    :fireworks "accounts/fireworks/models/glm-5p2"))))
+           (is (nil? (selection/resolve-model
+                      {:provider :fireworks
+                       :model "accounts/fireworks/models/glm-5p2"})))))))))
 
 (deftest total-outage-retains-history-without-claiming-availability
   (fake/with-server

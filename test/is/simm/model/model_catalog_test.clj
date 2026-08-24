@@ -1,5 +1,6 @@
 (ns is.simm.model.model-catalog-test
-  (:require [clojure.test :refer [deftest is use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [dvergr.model.registry :as registry]
             [is.simm.model.fake-models-server :as fake]
             [is.simm.model.model-catalog :as catalog]
@@ -10,28 +11,25 @@
 (def ^:private fireworks-model "accounts/fireworks/models/glm-5p2")
 
 (use-fixtures
-  :each
-  (fn [f]
-    (let [before @registry/registry]
-      (selection/reset-catalog!)
-      (registry/register-model!
-       {:id fireworks-model
-        :name "GLM 5.2"
-        :provider :fireworks
-        :api-type :openai-chat
-        :capabilities #{:tools :streaming :system-prompt}
-        :context 131072
-        :max-output 8192
-        :pricing {:input 1 :output 1}
-        :quirks {}})
-      (try
-        (f)
-        (finally
-          (reset! registry/registry before)
-          (selection/reset-catalog!))))))
-
-(defn- endpoint-choices []
-  (filterv #(#{"openai" "fireworks"} (:provider %)) (catalog/choices)))
+ :each
+ (fn [f]
+   (let [before @registry/registry]
+     (selection/reset-catalog!)
+     (registry/register-model!
+      {:id fireworks-model
+       :name "GLM 5.2"
+       :provider :fireworks
+       :api-type :openai-chat
+       :capabilities #{:tools :streaming :system-prompt}
+       :context 131072
+       :max-output 8192
+       :pricing {:input 1 :output 1}
+       :quirks {}})
+     (try
+       (f)
+       (finally
+         (reset! registry/registry before)
+         (selection/reset-catalog!))))))
 
 (defn- with-config [fixture env f]
   (binding [selection/*env-lookup* env
@@ -41,36 +39,93 @@
     (selection/reset-catalog!)
     (f)))
 
-(deftest picker-follows-provider-availability-and-retains-provenance
-  (fake/with-server
-   (fn [{:keys [base-url] :as fixture}]
-     (with-config fixture {}
-       #(is (= [] (endpoint-choices)) "no keys offer no endpoint models"))
+(defn- row [rows value]
+  (some #(when (= value (:value %)) %) rows))
 
+(defn- curated-values []
+  (into #{} (map #(or (:family %) (:model %))) catalog/curated))
+
+(deftest every-curated-family-and-model-stays-visible-without-credentials
+  (fake/with-server
+   (fn [fixture]
+     (with-config fixture {}
+       (fn []
+         (let [rows (catalog/choices)
+               by-value (into #{} (map :value) rows)]
+           (is (every? by-value (curated-values)))
+           (is (every? :disabled? rows))
+           (is (every? #(= :needs-credential (:availability %)) rows))
+           (doseq [[provider env-var]
+                   [["openai" "OPENAI_API_KEY"]
+                    ["fireworks" "FIREWORKS_API_KEY"]
+                    ["anthropic" "ANTHROPIC_API_KEY"]]]
+             (let [provider-rows (filter #(= provider (:provider %)) rows)]
+               (is (seq provider-rows))
+               (is (every? #(= env-var (:credential-source %)) provider-rows))
+               (is (every? #(and (str/includes?
+                                  (:availability-explanation %) env-var)
+                                 (str/includes?
+                                  (:availability-explanation %) "restart"))
+                           provider-rows))))
+           (is (empty? @(:requests fixture))
+               "rendering missing-credential rows makes no provider calls")))))))
+
+(deftest served-registry-and-account-states-share-one-picker-model
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/openai/models" openai-key
+                    ["gpt-5.6-luna" "gpt-9.9-luna"])
+     (with-config fixture {"OPENAI_API_KEY" openai-key}
+       (fn []
+         (let [before @registry/registry
+               rows (catalog/choices)
+               latest (row rows "gpt-*-luna")
+               supported (row rows "gpt-5.6-luna")
+               unregistered (row rows "gpt-9.9-luna")
+               withdrawn (row rows "gpt-*")]
+           (testing "served + registered + implemented is the only usable state"
+             (is (= :available (:availability latest)))
+             (is (= "gpt-5.6-luna" (:resolves latest)))
+             (is (:available? supported)))
+           (testing "served + unregistered is explicit and never registered"
+             (is (= :not-implemented (:availability unregistered)))
+             (is (= :registry-missing (:availability-reason unregistered)))
+             (is (= "Not yet supported" (:availability-label unregistered)))
+             (is (= "Not yet supported."
+                    (:availability-explanation unregistered)))
+             (is (nil? (registry/get-model "gpt-9.9-luna")))
+             (is (= before @registry/registry)
+                 "GET /models never mutates the registry"))
+           (testing "registered + not served is unavailable to this account"
+             (is (= :unavailable-to-account (:availability withdrawn)))
+             (is (:disabled? withdrawn)))
+           (testing "other curated providers remain visible"
+             (is (= :needs-credential
+                    (:availability (row rows
+                                        "accounts/fireworks/models/glm-*"))))
+             (is (= :needs-credential
+                    (:availability (row rows "claude-sonnet-4-6")))))))))))
+
+(deftest transient-failure-retains-last-known-rows-but-disables-them
+  (fake/with-server
+   (fn [fixture]
      (fake/respond! fixture "/openai/models" openai-key ["gpt-5.6-luna"])
      (with-config fixture {"OPENAI_API_KEY" openai-key}
        (fn []
-         (let [rows (endpoint-choices)]
-           (is (= #{"openai"} (set (map :provider rows))))
-           (is (every? #(= "OPENAI_API_KEY" (:credential-source %)) rows))
-           (is (every? #(= (str base-url "/openai") (:base-url %)) rows))
-           (is (every? :reachable? rows))
-           (is (every? :model-id rows)))))
+         (let [before (catalog/choices)]
+           (is (= :available (:availability (row before "gpt-*-luna"))))
+           (fake/outage! fixture "/openai/models" openai-key)
+           (selection/catalog true)
+           (let [after (catalog/choices)
+                 luna (row after "gpt-*-luna")]
+             (is (every? (into #{} (map :value) after) (curated-values)))
+             (is (= :temporarily-unreachable (:availability luna)))
+             (is (:disabled? luna))
+             (is (str/includes? (:availability-explanation luna)
+                                "Last-known status is retained"))
+             (is (= "gpt-5.6-luna" (:resolves luna))))))))))
 
-     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
-     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
-       (fn []
-         (let [rows (endpoint-choices)]
-           (is (= #{"fireworks"} (set (map :provider rows))))
-           (is (every? #(= "FIREWORKS_API_KEY" (:credential-source %)) rows))
-           (is (every? #(= :openai-compatible (:endpoint-kind %)) rows)))))
-
-     (with-config fixture {"OPENAI_API_KEY" openai-key
-                           "FIREWORKS_API_KEY" fireworks-key}
-       #(is (= #{"openai" "fireworks"}
-               (set (map :provider (endpoint-choices)))))))))
-
-(deftest picker-distinguishes-custom-and-identical-endpoints
+(deftest identical-endpoint-urls-retain-provider-provenance
   (fake/with-server
    (fn [{:keys [base-url] :as fixture}]
      (let [shared-base (str base-url "/shared")]
@@ -81,37 +136,12 @@
                                         "FIREWORKS_API_KEY" fireworks-key}
                  selection/*provider-base-urls* {:openai shared-base
                                                  :fireworks shared-base}]
-         (let [rows (endpoint-choices)
-               by-provider (group-by :provider rows)]
+         (selection/reset-catalog!)
+         (let [available (filterv :available? (catalog/choices))
+               by-provider (group-by :provider available)]
            (is (= #{"openai" "fireworks"} (set (keys by-provider))))
-           (is (every? #(= shared-base (:base-url %)) rows))
-           (is (every? #(= :openai-compatible (:endpoint-kind %)) rows))
-           (is (every? (complement :native-openai?) (get by-provider "openai")))
+           (is (every? #(= shared-base (:base-url %)) available))
            (is (every? #(= "OPENAI_API_KEY" (:credential-source %))
                        (get by-provider "openai")))
            (is (every? #(= "FIREWORKS_API_KEY" (:credential-source %))
                        (get by-provider "fireworks")))))))))
-
-(deftest outages-are-not-picker-availability
-  (fake/with-server
-   (fn [fixture]
-     (fake/respond! fixture "/openai/models" openai-key ["gpt-5.6-luna"])
-     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
-     (with-config fixture {"OPENAI_API_KEY" openai-key
-                           "FIREWORKS_API_KEY" fireworks-key}
-       (fn []
-         (is (= #{"openai" "fireworks"}
-                (set (map :provider (endpoint-choices)))))
-         (fake/outage! fixture "/fireworks/models" fireworks-key)
-         (selection/catalog true)
-         (is (= #{"openai"} (set (map :provider (endpoint-choices))))
-             "partial outage removes only the unreachable provider")
-         (is (= :unreachable
-                (:reachability
-                 (first (filter #(= :fireworks (:provider %))
-                                (selection/catalog)))))
-             "last-known Fireworks state remains explicit")
-         (fake/outage! fixture "/openai/models" openai-key)
-         (selection/catalog true)
-         (is (= [] (endpoint-choices))
-             "total outage leaves no endpoint model available"))))))

@@ -3,8 +3,9 @@
 
    Two halves, and the split is the point. The FAMILIES are curated: a family
    string makes a poor name, and which families to put in front of someone is a
-   judgement call. The VERSIONS under each family are DERIVED, from the versions
-   the provider serves that dvergr's registry also knows.
+   judgement call. The VERSIONS under each family are DERIVED from last-known
+   provider and registry facts. Availability is explicit on every row; a family
+   never disappears merely because its credential or account access does.
 
    Hand-writing both halves is what made the list incoherent: GLM had a pinned
    5.2 row because someone typed one, while the GPT families had none because
@@ -78,23 +79,18 @@
        "and editing, search, tests. This model refuses tool calls unless its "
        "reasoning is switched off, so simmis switches it off and keeps the tools."))
 
-(def ^:private endpoint-catalog-providers #{:openai :fireworks})
-
-(defn- registered?
-  ([id] (boolean (registry/get-model id)))
-  ([provider id]
-   (= (keyword provider) (:provider (registry/get-model id)))))
-
 (defn- provenance
-  "Endpoint facts for a currently available provider/model pair. Picker rows
-   retain these instead of flattening availability back to an unscoped id."
+  "Last-known endpoint facts for a provider/model pair. Picker rows retain
+   these instead of flattening availability back to an unscoped id."
   [provider id]
-  (some #(when (and (= (keyword provider) (:provider %))
-                    (= id (:model-id %)))
-           (select-keys % [:base-url :credential-source :reachability
-                           :reachable? :model-id :endpoint-kind
-                           :native-openai?]))
-        (ms/available-catalog)))
+  (merge
+   {:credential-source (:credential-source (ms/provider-contract provider))}
+   (some #(when (and (= (keyword provider) (:provider %))
+                     (= id (:model-id %)))
+            (select-keys % [:base-url :credential-source :reachability
+                            :reachable? :model-id :endpoint-kind
+                            :native-openai?]))
+         (ms/catalog))))
 
 (defn reasoning-disabled-for-tools?
   "Whether the configured provider will apply this model's tools workaround.
@@ -119,75 +115,123 @@
 (def ^:private max-versions
   "How many pinned versions to offer under a family.
 
-   A picker is a shortlist, not an archive: two keeps `latest` plus the one you
-   would roll back to. Anything older is still reachable by writing the id into
-   the agent's config."
+   A picker is a shortlist, not an archive: two keeps `latest` plus the nearest
+   explicit pins. Server validation accepts only rows in this shortlist."
   2)
 
+(defn availability-copy
+  "Human copy for one authoritative availability result."
+  [provider {:keys [state credential-source]}]
+  (case state
+    :available
+    {:availability-label "Available"
+     :availability-explanation "Available to this account and supported by simmis."}
+
+    :needs-credential
+    {:availability-label "Credential required"
+     :availability-explanation
+     (str "Set " credential-source " in the server environment, then restart simmis.")}
+
+    :not-implemented
+    {:availability-label "Not yet supported"
+     :availability-explanation "Not yet supported."}
+
+    :unavailable-to-account
+    {:availability-label "Unavailable to account"
+     :availability-explanation
+     (str (provider-label provider) " does not make this model available to this account.")}
+
+    :temporarily-unreachable
+    {:availability-label "Temporarily unreachable"
+     :availability-explanation
+     (str (provider-label provider)
+          " model availability could not be refreshed. Last-known status is retained, "
+          "but this choice cannot be used until the provider responds.")}))
+
+(defn- with-availability
+  [row]
+  (let [availability (ms/model-availability (:provider row) (:resolves row))]
+    (merge row
+           {:availability (:state availability)
+            :availability-reason (:reason availability)
+            :available? (:available? availability)
+            :disabled? (not (:available? availability))}
+           (select-keys availability [:credential-source :last-success-at])
+           (availability-copy (:provider row) availability)
+           (reasoning-copy (:no-reasoning? row))
+           (provenance (:provider row) (:resolves row)))))
+
 (defn- family-rows
-  "One `latest` row for `family`, then a row per version on offer. Empty when
-   nothing in the family is both served and registered, which is how a family
-   the current keys cannot reach drops out of the picker instead of being
-   offered and then failing at turn time."
+  "One always-visible `latest` row, then last-known/registered version rows."
   [{:keys [family label provider]}]
-  (let [versions (->> (ms/versions-in provider family)
-                      (filter #(registered? provider (ms/id-for family %)))
-                      (take max-versions))]
-    (when-let [latest (first versions)]
-      (let [latest-id (ms/id-for family latest)]
-        (into [(merge
-                {:kind :family
-                 :value family
-                 :label (str label " (latest)")
-                 :provider provider
-                 :provider-label (provider-label provider)
-                 :resolves latest-id
-                 :no-reasoning? (reasoning-disabled-for-tools? provider latest-id)}
-                (provenance provider latest-id))]
-            (map (fn [v]
-                   (let [id (ms/id-for family v)]
-                     (merge
-                      {:kind :version
-                       :value id
-                       :label (str label " " (version-label v))
-                       :provider provider
-                       :provider-label (provider-label provider)
-                       :resolves id
-                       :no-reasoning? (reasoning-disabled-for-tools? provider id)}
-                      (provenance provider id))))
-                 versions))))))
+  (let [versions (take max-versions (ms/known-versions-in provider family))
+        latest-id (:candidate (ms/resolve-selection {:family family
+                                                     :version :auto
+                                                     :provider provider}))]
+    (into [(with-availability
+            {:kind :family
+             :value family
+             :label (str label " (latest)")
+             :provider provider
+             :provider-label (provider-label provider)
+             :resolves latest-id
+             :no-reasoning? (reasoning-disabled-for-tools? provider latest-id)})]
+          (map (fn [v]
+                 (let [id (ms/id-for family v)]
+                   (with-availability
+                    {:kind :version
+                     :value id
+                     :label (str label " " (version-label v))
+                     :provider provider
+                     :provider-label (provider-label provider)
+                     :resolves id
+                     :no-reasoning? (reasoning-disabled-for-tools? provider id)})))
+               versions))))
 
 (defn choices
   "Every row a model picker should show, in order. Each row carries its own
    copy, so the client never composes a sentence of its own."
   []
-  (mapv (fn [row] (merge row (reasoning-copy (:no-reasoning? row))))
+  (mapv identity
         (mapcat (fn [{:keys [family model label provider] :as entry}]
-                  (cond
-                    family (family-rows entry)
-                    (and model
-                         (registered? model)
-                         (or (not (endpoint-catalog-providers (keyword provider)))
-                             (ms/available-model? provider model)))
-                    [(merge
+                  (if family
+                    (family-rows entry)
+                    [(with-availability
                       {:kind :model
                        :value model
                        :label label
                        :provider provider
                        :provider-label (provider-label provider)
                        :resolves model
-                       :no-reasoning? (reasoning-disabled-for-tools? provider model)}
-                      (provenance provider model))]
-                    :else []))
+                       :no-reasoning? (reasoning-disabled-for-tools? provider model)})]))
                 curated)))
+
+(defn choice
+  "Picker row for `value`, or nil when the value is outside the curated list."
+  [value]
+  (some #(when (= value (:value %)) %) (choices)))
+
+(defn require-available-choice!
+  "Return the curated available row, or reject an unavailable/unknown choice."
+  [value]
+  (let [row (choice value)]
+    (if (:available? row)
+      row
+      (throw (ex-info "Model choice is unavailable"
+                      {:type :model-choice-unavailable
+                       :model-choice value
+                       :availability (or (:availability row) :not-implemented)
+                       :availability-reason (or (:availability-reason row)
+                                                :not-curated)
+                       :credential-source (:credential-source row)})))))
 
 (defn selected?
   "Is `row` the one this config uses? `model-info` comes from
    `room-agents/describe-model`."
-  [row {:keys [family auto? model]}]
+  [row {:keys [family auto? model candidate]}]
   (if (and family auto?)
     (= (:value row) family)
-    (= (:value row) model)))
+    (= (:value row) (or model candidate))))
 
 (defn choice-label
   "The picker's own label for what this config selected, so the configuration

@@ -11,8 +11,9 @@
    nobody remembers to write the migration.
 
    So: an agent stores what the HUMAN chose — a family, and either a pinned
-   version or :auto — and the concrete id is computed fresh on every turn. A new
-   release is picked up by restarting, not by a migration.
+   version or :auto — and the concrete id is computed when the participant is
+   joined or rejoined. A new release is picked up by restarting, not by a
+   migration.
 
    FAMILY is the id with its version slot blanked, which makes it provider-shaped
    rather than a name we have to curate:
@@ -24,8 +25,9 @@
 
    VERSION is the token that filled the slot (\"5p2\", \"k2p6\", \"v4\", \"5.6\"),
    ordered by its digit groups — 5p2 > 5p1, k2p6 > k2p5, 5.6 > 5.5. :auto means
-   \"newest the provider actually offers\", read from the live catalog, not from a
-   list we maintain.
+   \"newest that is served, registered, and implemented\", combining provider
+   evidence with the static registry rather than maintaining another version
+   list.
 
    The CATALOG spans every OpenAI-compatible endpoint this machine has a key for
    — Fireworks and OpenAI both — while retaining which provider, credential and
@@ -33,14 +35,64 @@
    provider going dark cannot erase another provider's answer or turn stale ids
    into claims that they are currently reachable."
   (:require [clojure.string :as str]
+            [dvergr.model.registry :as registry]
             [taoensso.telemere :as log]))
 
 (def default-model
-  "The id an agent falls back to when the provider catalog is unreachable and
-   nothing else resolves. Single source of truth — `parties/default-model`
-   re-exports this. Keep in sync with the Fireworks registry: older suffixes
-   (glm-5, kimi-k2-thinking) 404 once a new version ships."
+  "The explicit product default used only when nobody selected a model.
+
+   It is still subject to the same availability check as every saved choice;
+   an unavailable configured model never falls through to this id. Single
+   source of truth — `parties/default-model` re-exports it."
   "accounts/fireworks/models/glm-5p2")
+
+(def provider-contracts
+  "The provider facts simmis can know without asking a provider.
+
+   `:catalog-required?` means the account's `/models` response participates in
+   availability. Anthropic does not expose that OpenAI-protocol endpoint here,
+   so its curated rows are gated by credential + registry/adapter support.
+   Keeping the exact environment variable beside the adapter contract is what
+   lets every unavailable surface give the same actionable explanation."
+  {:openai {:credential-source "OPENAI_API_KEY"
+            :catalog-required? true
+            :implemented-api-types #{:openai-chat}}
+   :fireworks {:credential-source "FIREWORKS_API_KEY"
+               :catalog-required? true
+               :implemented-api-types #{:openai-chat}}
+   :anthropic {:credential-source "ANTHROPIC_API_KEY"
+               :catalog-required? false
+               :implemented-api-types #{:anthropic-messages}}})
+
+(defn availability-state
+  "Pure, authoritative state matrix for one provider/model candidate.
+
+   The order is intentional: a missing credential is the first actionable
+   problem; a registry/adapter gap is certain even during an endpoint outage;
+   only a fully implemented candidate can be temporarily unreachable or absent
+   from the account. `served?` is last-known provider evidence, never a reason
+   to register a model dynamically."
+  [{:keys [provider-known? credential-present? registered? implemented?
+           catalog-required? catalog-reachability served?]}]
+  (cond
+    (not provider-known?) :not-implemented
+    (not credential-present?) :needs-credential
+    (not registered?) :not-implemented
+    (not implemented?) :not-implemented
+    (and catalog-required? (= :temporarily-unreachable catalog-reachability))
+    :temporarily-unreachable
+    (and catalog-required? (not served?)) :unavailable-to-account
+    :else :available))
+
+(defn availability-reason
+  "The machine-readable reason below an availability state."
+  [{:keys [provider-known? registered? implemented?] :as facts}]
+  (case (availability-state facts)
+    :not-implemented (cond
+                       (not provider-known?) :provider-adapter-missing
+                       (not registered?) :registry-missing
+                       (not implemented?) :adapter-missing)
+    nil))
 
 ;; ---------------------------------------------------------------------------
 ;; Version grammar
@@ -174,6 +226,17 @@
   []
   (mapv public-endpoint (configured-endpoints)))
 
+(defn provider-contract
+  "Static contract for `provider`, including its exact credential variable."
+  [provider]
+  (get provider-contracts (keyword provider)))
+
+(defn credential-present?
+  "Whether this process started with the provider's credential available."
+  [provider]
+  (when-let [credential-source (:credential-source (provider-contract provider))]
+    (boolean (seq (*env-lookup* credential-source)))))
+
 (defn- endpoint-key [endpoint]
   [(:provider endpoint) (:base-url endpoint) (:credential-source endpoint)])
 
@@ -224,9 +287,11 @@
   [endpoint previous]
   (if-some [ids (fetch-endpoint! endpoint)]
     {:endpoint (public-endpoint endpoint)
+     :reachability :reachable
      :last-success-at (System/currentTimeMillis)
      :models (mapv #(model-record endpoint % :reachable) ids)}
     {:endpoint (public-endpoint endpoint)
+     :reachability :temporarily-unreachable
      :last-success-at (:last-success-at previous)
      :models (mapv #(assoc % :reachability :unreachable :reachable? false)
                    (:models previous))}))
@@ -277,22 +342,97 @@
   []
   (filterv :reachable? (catalog)))
 
-(defn available-model?
-  "Whether `model-id` is currently returned by `/models`.
+(defn provider-catalog-status
+  "Current fetch state and last-known served ids for one catalog provider.
 
-   With a provider, require that exact provider record. Without one, prefer the
-   provider dvergr registered for the id; unknown ids may match any configured
-   provider so custom OpenAI-compatible deployments remain usable."
+   A transient failure leaves `:served-model-ids` intact and changes only
+   `:reachability`; an initial failure has an empty last-known set. Missing
+   credentials are configuration, not a failed fetch."
+  [provider]
+  (let [provider (keyword provider)
+        contract (provider-contract provider)]
+    (cond
+      (not (:catalog-required? contract))
+      {:reachability :not-required :served-model-ids #{}}
+
+      (not (credential-present? provider))
+      {:reachability :not-configured :served-model-ids #{}}
+
+      :else
+      (do
+        (catalog)
+        (if-let [endpoint-state
+                 (some #(when (= provider (get-in % [:endpoint :provider])) %)
+                       (vals (:endpoints @catalog-cache)))]
+          {:reachability (:reachability endpoint-state)
+           :last-success-at (:last-success-at endpoint-state)
+           :served-model-ids (into #{} (map :model-id) (:models endpoint-state))}
+          ;; A configured endpoint always receives a state during refresh. If
+          ;; that invariant is broken, fail closed instead of interpreting the
+          ;; missing state as a successful empty account.
+          {:reachability :temporarily-unreachable :served-model-ids #{}})))))
+
+(defn infer-provider
+  "Provider identity for an id/family, without choosing a different provider.
+
+   The registry is authoritative when it has the id. Prefixes only recover the
+   identity already encoded in an unregistered id; there is deliberately no
+   catch-all provider."
+  [id-or-family]
+  (or (some-> (registry/get-model id-or-family) :provider)
+      (some->> (registry/list-models)
+               (filter #(= id-or-family (family-of (:id %))))
+               first
+               :provider)
+      (cond
+        (str/starts-with? (str id-or-family) "accounts/fireworks/models/") :fireworks
+        (str/starts-with? (str id-or-family) "gpt-") :openai
+        (str/starts-with? (str id-or-family) "claude-") :anthropic)))
+
+(defn model-availability
+  "Authoritative availability result for an exact provider/model pair.
+
+   Registry metadata is never synthesized from `/models`. A served unknown id
+   is therefore `:not-implemented`/`:registry-missing`; a registered id absent
+   from a successful account catalog is `:unavailable-to-account`; and a fetch
+   failure retains the last-known served set while reporting
+   `:temporarily-unreachable`."
   ([model-id]
-   (let [registered-provider
-         (some-> ((requiring-resolve 'dvergr.model.registry/get-model) model-id)
-                 :provider)]
-     (available-model? registered-provider model-id)))
+   (model-availability (infer-provider model-id) model-id))
   ([provider model-id]
-   (boolean
-    (some #(and (= model-id (:model-id %))
-                (or (nil? provider) (= (keyword provider) (:provider %))))
-          (available-catalog)))))
+   (let [provider (some-> provider keyword)
+         contract (provider-contract provider)
+         definition (registry/get-model model-id)
+         registered? (boolean (and definition (= provider (:provider definition))))
+         implemented? (boolean
+                       (and registered?
+                            (contains? (:implemented-api-types contract)
+                                       (:api-type definition))))
+         catalog-status (provider-catalog-status provider)
+         facts {:provider-known? (boolean contract)
+                :credential-present? (credential-present? provider)
+                :registered? registered?
+                :implemented? implemented?
+                :catalog-required? (boolean (:catalog-required? contract))
+                :catalog-reachability (:reachability catalog-status)
+                :served? (or (not (:catalog-required? contract))
+                             (contains? (:served-model-ids catalog-status) model-id))}
+         state (availability-state facts)]
+     (merge facts
+            {:state state
+             :reason (availability-reason facts)
+             :available? (= :available state)
+             :provider provider
+             :model-id model-id
+             :credential-source (:credential-source contract)
+             :last-success-at (:last-success-at catalog-status)}))))
+
+(defn available-model?
+  "Whether the exact provider/model pair is executable now."
+  ([model-id]
+   (:available? (model-availability model-id)))
+  ([provider model-id]
+   (:available? (model-availability provider model-id))))
 
 (defn versions-in
   "Versions of `family` currently offered, newest first. With `provider`, only
@@ -309,6 +449,28 @@
         (sort-by version-key #(compare %2 %1))
         vec)))
 
+(defn known-versions-in
+  "Last-known served OR registered versions of `family`, newest first.
+
+   This union keeps withdrawn and newly served/unregistered states observable;
+   availability is decided separately for each exact id."
+  ([family]
+   (known-versions-in nil family))
+  ([provider family]
+   (let [provider (some-> (or provider (infer-provider family)) keyword)
+         served (->> (:served-model-ids (provider-catalog-status provider))
+                     (filter #(= family (family-of %))))
+         registered (->> (registry/list-models)
+                         (filter #(= provider (:provider %)))
+                         (map :id)
+                         (filter #(= family (family-of %))))]
+     (->> (concat served registered)
+          (map version-of)
+          (remove nil?)
+          distinct
+          (sort-by version-key #(compare %2 %1))
+          vec))))
+
 (defn newest-usable
   "Newest version of `family` that the provider serves AND the registry knows.
 
@@ -317,30 +479,21 @@
    id it does not know — so `:auto` on those families would have picked a model
    that kills the turn. One version behind beats a turn that cannot start.
 
-   Falls back to the newest served when the registry knows none of them, which
-   is the state of a registry that has not loaded yet."
+   Returns nil when none is available. It never substitutes an unregistered,
+   withdrawn, unreachable, or differently provided model."
   ([family]
    (newest-usable nil family))
   ([provider family]
-   (let [vs (versions-in provider family)
-         known (filter
-                (fn [version]
-                  (let [id (id-for family version)
-                        registered-provider
-                        (some-> ((requiring-resolve 'dvergr.model.registry/get-model) id)
-                                :provider)]
-                    (and registered-provider
-                         (or (nil? provider)
-                             (= (keyword provider) registered-provider))
-                         (available-model? registered-provider id))))
-                vs)]
-     (when (and (seq vs) (seq known) (not= (first vs) (first known)))
+   (let [provider (or provider (infer-provider family))
+         vs (known-versions-in provider family)
+         usable (filter #(available-model? provider (id-for family %)) vs)]
+     (when (and (seq vs) (seq usable) (not= (first vs) (first usable)))
        (log/log! {:level :info :id ::newer-version-not-registered
                   :data {:provider provider
                          :family family
                          :serving (first vs)
-                         :using (first known)}}))
-     (or (first known) (first vs)))))
+                         :using (first usable)}}))
+     (first usable))))
 
 (defn families
   "Families on offer → {family [versions newest-first]}. Powers a UI picker:
@@ -363,45 +516,42 @@
   (or (family-of default-model)
       "accounts/fireworks/models/glm-*"))
 
-(defn resolve-model
-  "Concrete model id for a selection.
+(defn resolve-selection
+  "Availability-aware resolution for one stored or incoming selection.
 
    {:family f :version \"5p2\"} — pinned: the human chose this exact version.
-   {:family f :version :auto}   — newest version of f the provider offers.
+   {:family f :version :auto}   — newest AVAILABLE version in that exact family.
    {:model id}                  — a fully pinned id (legacy configs, and the
                                   escape hatch for a model with no version).
 
-   A pinned version that the provider has withdrawn resolves to the newest in
-   its family instead of 404-ing the turn — being one minor version off beats
-   an agent that cannot speak."
-  [{:keys [model family version provider] :as selection}]
-  (cond
-    ;; explicit id wins — nothing to resolve
-    (and model (not family)) model
+   `:candidate` preserves the exact last-known/requested identity for diagnosis;
+   `:model` is present only when that candidate is executable. A withdrawn pin
+   therefore fails closed instead of silently becoming a newer model, and an
+   unavailable family never crosses to a different family/provider."
+  [{:keys [model family version provider]}]
+  (if-not (or model family)
+    {:candidate nil :model nil :provider nil :availability nil :available? false}
+    (let [provider (or provider (infer-provider (or model family)))
+          auto? (and family (or (nil? version) (= version :auto) (= version "auto")))
+          usable-version (when auto? (newest-usable provider family))
+          candidate (cond
+                      (and model (not family)) model
+                      auto? (if usable-version
+                              (id-for family usable-version)
+                              (some->> (first (known-versions-in provider family))
+                                       (id-for family)))
+                      :else (id-for family version))
+          availability (model-availability provider candidate)]
+      {:candidate candidate
+       :model (when (:available? availability) candidate)
+       :provider provider
+       :availability availability
+       :available? (:available? availability)})))
 
-    ;; NOTHING chosen. nil, not `default-model`, so the caller can fall back to
-    ;; the owner's preference before the code default. This used to answer
-    ;; `default-model` here, which made `ensure-agent-joined!`'s
-    ;; `(or resolved fallback-model default-model)` unreachable past its first
-    ;; branch: Settings > Model Preference wrote a row nothing ever read.
-    (nil? family)
-    nil
-
-    (or (nil? version) (= version :auto) (= version "auto"))
-    (if-let [newest (newest-usable provider family)]
-      (id-for family newest)
-      (do (log/log! {:level :warn :id ::family-not-in-catalog
-                     :data {:family family :falling-back-to default-model}})
-          default-model))
-
-    :else
-    (let [id (id-for family version)]
-      (if (available-model? provider id)
-        id
-        (let [newest (newest-usable provider family)]
-          (log/log! {:level :warn :id ::pinned-version-unavailable
-                     :data {:selection selection :pinned id :using (when newest (id-for family newest))}})
-          (if newest (id-for family newest) default-model))))))
+(defn resolve-model
+  "Concrete executable id for `selection`, or nil when it is unavailable."
+  [selection]
+  (:model (resolve-selection selection)))
 
 (defn resolve-config
   "Model id for an agent's :actor/config, or nil when it configures no model.
@@ -427,7 +577,7 @@
   (when (seq (str s))
     (if (family? s)
       (resolve-model {:family s :version :auto})
-      s)))
+      (resolve-model {:model s}))))
 
 (defn describe
   "What an agent's stored config actually means, for display and for a picker's
@@ -436,10 +586,17 @@
    {:family :version :auto? :model :configured?}. `:model` is the id the next
    turn will use, `:configured?` is false when the agent chose nothing and
    inherits its owner's preference."
-  [{:keys [model-family model-version model] :as cfg}]
-  (let [auto? (or (nil? model-version) (= model-version :auto) (= model-version "auto"))]
+  [{:keys [model-family model-version model]}]
+  (let [auto? (or (nil? model-version) (= model-version :auto) (= model-version "auto"))
+        resolved (resolve-selection {:family model-family
+                                     :version model-version
+                                     :model (when-not model-family model)})]
     {:family      model-family
      :version     (when-not auto? model-version)
      :auto?       (boolean (and model-family auto?))
-     :model       (resolve-config cfg)
+     :model       (:model resolved)
+     :candidate   (:candidate resolved)
+     :provider    (:provider resolved)
+     :availability (:availability resolved)
+     :available?  (:available? resolved)
      :configured? (boolean (or model-family model))}))

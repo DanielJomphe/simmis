@@ -2,6 +2,7 @@
   "Agent Inspector — Phase 1: config, KB connections, chat link."
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
+            [is.simm.uis.web.desktop.views.model-picker :as model-picker]
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
@@ -25,7 +26,7 @@
    room-states: current room-states signal value (map of scope-str → {:db db})"
   [data admin-data room-states]
   (let [{:keys [agent-id room-id agent-name model-info]} data
-        model (:model model-info)
+        model (or (:model model-info) (:candidate model-info))
         label (cond
                 (str/includes? (or model "") "claude") "Claude"
                 (str/includes? (or model "") "gpt")    "GPT"
@@ -101,8 +102,10 @@
             ;; (room-agents/describe-model). Reading :party/model directly is
             ;; what used to print "—" for an agent following a family, next to
             ;; a provider it never chose.
-            (let [{:keys [model model-short choice-label provider-label no-reasoning?
-                          reasoning-copy reasoning-explanation inherited?]} chosen]
+            (let [{:keys [model candidate model-short choice-label provider-label no-reasoning?
+                          reasoning-copy reasoning-explanation inherited? available?
+                          availability-label availability-explanation]} chosen
+                  display-model (or model candidate)]
               (el/div {:class "agent-inspector-section"}
                 (el/h3 {:class "agent-inspector-section-title"} "Configuration")
                 (el/div {:class "agent-inspector-config"}
@@ -112,7 +115,7 @@
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Model")
                     (el/span {:class "agent-inspector-value"}
-                      (str (or choice-label model "—")
+                      (str (or choice-label display-model "—")
                            (when inherited? " · your default"))))
                   ;; The short id, so every provider reads the same way here.
                   ;; The full id stays one hover away for the path-addressed
@@ -121,13 +124,19 @@
                     (el/span {:class "agent-inspector-label"} "Running now")
                     (el/span {:class (vc/class-names "agent-inspector-value"
                                                      "agent-inspector-value--mono"
-                                                     (when (not= model model-short) "has-tooltip"))
-                              :data-tooltip (or model "")}
-                      (or model-short model "—")))
+                                                     (when (not= display-model model-short) "has-tooltip"))
+                              :data-tooltip (or display-model "")}
+                      (or model-short display-model "—")))
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Provider")
                     (el/span {:class "agent-inspector-value"}
                       (or provider-label "unknown")))
+                  (when-not available?
+                    (el/div {:class "agent-inspector-row"}
+                      (el/span {:class "agent-inspector-label"} "Availability")
+                      (el/span {:class "agent-inspector-value agent-inspector-value--unavailable"
+                                :data-tooltip availability-explanation}
+                        availability-label)))
                   ;; Reasoning gets its own row rather than a suffix on the
                   ;; provider, where it read as a claim about OpenAI. Same words
                   ;; as the picker's tag, from the same server field, and the
@@ -159,30 +168,19 @@
                           (assoc c :selected?
                                  (if (and (:family chosen) (:auto? chosen))
                                    (= (:value c) (:family chosen))
-                                   (= (:value c) (:model chosen)))))
+                                   (= (:value c) (or (:model chosen)
+                                                     (:candidate chosen))))))
                         (:model-choices admin-data))
-                    (fn [{:keys [value label kind provider-label no-reasoning?
-                                 reasoning-copy reasoning-explanation selected?]}]
-                      (el/div {:key value
-                               :class (vc/class-names "settings-model-option"
-                                                      (when selected? "selected"))
-                               :on-click
-                               (fn [_]
-                                 (let [s (chat-remote/update-agent-config!
-                                           web/server-id agent-id agent-name value nil)]
-                                   (s (fn [_] (reset! sig/admin-data nil))
-                                      (fn [err] (js/console.error "[agent-inspector] model error:" err)))))}
-                        (el/div {:class (vc/class-names "settings-model-name"
-                                                        (when (= kind :version)
-                                                          "settings-model-name--version"))}
-                          label)
-                        (when no-reasoning?
-                          (el/div {:class "settings-model-tag"
-                                   :data-tooltip reasoning-explanation}
-                            (str "reasoning " reasoning-copy)))
-                        (el/div {:class "settings-model-provider"} provider-label)
-                        (when selected?
-                          (vc/icon "check" {:class "settings-model-check"})))))))
+                    (fn [row]
+                      (model-picker/render-option
+                       row
+                       (fn [value]
+                         (let [s (chat-remote/update-agent-config!
+                                  web/server-id agent-id agent-name value nil)]
+                           (s (fn [_] (reset! sig/admin-data nil))
+                              (fn [err]
+                                (js/console.error
+                                 "[agent-inspector] model error:" err))))))))))
 
             ;; System prompt section — always editable
             (let [prompt (or (:party/system-prompt agent-config) "")

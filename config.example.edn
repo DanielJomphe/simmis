@@ -61,12 +61,15 @@
 ;;                       simmis warns on every boot while it is on.
 ;;
 ;;   FIREWORKS_API_KEY   LLM providers. A provider is registered at boot only
-;;   OPENAI_API_KEY      if its key is present, and agents fall back to
-;;   ANTHROPIC_API_KEY   accounts/fireworks/models/glm-5p2 — so FIREWORKS_API_KEY
-;;                       is the least-effort option. Set several; each agent
+;;   OPENAI_API_KEY      if its key is present. The explicit default (only when
+;;   ANTHROPIC_API_KEY   nobody chose a model) is the Fireworks GLM family, so
+;;                       FIREWORKS_API_KEY is the least-effort option. A missing,
+;;                       withdrawn, unsupported, or unreachable choice is never
+;;                       replaced with that default. Set several; each agent
 ;;                       picks its own model, and the provider follows from it.
 ;;                       Keys are provider-scoped: OpenAI never supplies a
-;;                       Fireworks credential, or vice versa.
+;;                       Fireworks credential, or vice versa. Restart after
+;;                       adding or changing a provider credential.
 ;;
 ;;   OPENAI_BASE_URL     Where OPENAI_API_KEY points. UNSET means OpenAI itself
 ;;                       (https://api.openai.com/v1) — the gpt-5.6 / gpt-5.5

@@ -44,6 +44,7 @@
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
             [is.simm.model.model-selection :as model-selection]
+            [is.simm.model.model-catalog :as model-catalog]
             [is.simm.model.seed :as seed]
             [is.simm.model.knowledge-bases :as kbs]
             [is.simm.model.room-databases :as room-dbs]
@@ -2058,8 +2059,7 @@
       (cond
         (str/starts-with? (or model "") "accounts/fireworks/") :fireworks
         (str/starts-with? (or model "") "gpt-") :openai
-        (str/starts-with? (or model "") "claude-") :anthropic
-        :else :fireworks)))
+        (str/starts-with? (or model "") "claude-") :anthropic)))
 
 (defn describe-model
   "What an agent will ACTUALLY run, from its stored config plus its owner's
@@ -2070,40 +2070,54 @@
    {:model :family :version :auto? :configured? :provider :no-reasoning? :label}"
   [agent-party]
   (ensure-providers!)
-  (let [{:keys [family version auto? model configured?]}
-        (model-selection/describe
-          {:model-family (:party/model-family agent-party)
-           :model-version (:party/model-version agent-party)
-           :model (:party/model agent-party)})
+  (let [configured (model-selection/describe
+                    {:model-family (:party/model-family agent-party)
+                     :model-version (:party/model-version agent-party)
+                     :model (:party/model agent-party)})
         owner-id (:party/id (:party/owner agent-party))
-        inherited (when-not configured?
-                    (some-> (parties/get-party owner-id)
-                            :party/preferred-model
-                            model-selection/resolve-string))
-        model (or model inherited parties/default-model)
-        provider (resolve-provider model (:party/provider agent-party))]
+        preference (when-not (:configured? configured)
+                     (some-> (parties/get-party owner-id) :party/preferred-model))
+        inherited (when (seq preference)
+                    (if (model-selection/family? preference)
+                      (model-selection/describe {:model-family preference
+                                                 :model-version :auto})
+                      (model-selection/describe {:model preference})))
+        defaulted (when-not (or (:configured? configured) inherited)
+                    (model-selection/describe {:model parties/default-model}))
+        chosen (cond
+                 (:configured? configured) configured
+                 inherited inherited
+                 :else defaulted)
+        model (:model chosen)
+        candidate (:candidate chosen)
+        display-model (or model candidate)
+        provider (or (:provider chosen)
+                     (resolve-provider display-model (:party/provider agent-party)))
+        availability (:availability chosen)]
     (as-> {:model model
-           :family family
-           :version version
-           :auto? auto?
-           :configured? configured?
-           :inherited? (boolean (and (not configured?) inherited))
+           :candidate candidate
+           :family (:family chosen)
+           :version (:version chosen)
+           :auto? (:auto? chosen)
+           :configured? (:configured? configured)
+           :inherited? (boolean inherited)
+           :available? (:available? chosen)
+           :availability (:state availability)
+           :availability-reason (:reason availability)
            :provider provider
-           :provider-label ((requiring-resolve 'is.simm.model.model-catalog/provider-label) provider)
-           :model-short ((requiring-resolve 'is.simm.model.model-catalog/short-id) model)
+           :provider-label (model-catalog/provider-label provider)
+           :model-short (model-catalog/short-id display-model)
            :no-reasoning?
-           ((requiring-resolve
-             'is.simm.model.model-catalog/reasoning-disabled-for-tools?)
-            provider model)
-           :label (or (:name (registry/get-model model)) model)} info
+           (model-catalog/reasoning-disabled-for-tools? provider display-model)
+           :label (or (:name (registry/get-model display-model)) display-model)} info
       ;; The label the PICKER uses for this same choice. The configuration panel
       ;; prints it verbatim, so the two cannot drift into separate vocabularies
       ;; ("family latest" against "(latest)") the way they did.
       (merge info
-             ((requiring-resolve 'is.simm.model.model-catalog/reasoning-copy)
-              (:no-reasoning? info))
+             (model-catalog/reasoning-copy (:no-reasoning? info))
+             (model-catalog/availability-copy provider availability)
              {:choice-label
-              (or ((requiring-resolve 'is.simm.model.model-catalog/choice-label) info)
+              (or (model-catalog/choice-label info)
                   (:label info))}))))
 
 ;; A `:run-turn-fn` wrapper used to mirror each turn's usage onto the owner's
@@ -2198,7 +2212,7 @@
             ;; Resolved HERE, per participant creation — never frozen into the
             ;; agent's stored config. An agent records the family it belongs to
             ;; and whether its version is pinned or :auto; the concrete id is
-            ;; computed against the provider's live catalog. This is why Vár ran
+            ;; computed against the provider's availability catalog. This is why Vár ran
             ;; glm-5p1 for eleven days after we "switched" to 5p2: the id had
             ;; been baked in at creation, and no code change could reach it.
             ;;
@@ -2206,6 +2220,15 @@
             ;; settings render exactly what this join uses, so a screen can no
             ;; longer disagree with a turn.
             {:keys [model provider] :as chosen} (describe-model agent-party)
+            availability-check
+            (when-not (:available? chosen)
+              (throw (ex-info "Agent model is unavailable"
+                              {:type :model-unavailable
+                               :agent-id agent-uuid
+                               :model (:candidate chosen)
+                               :provider provider
+                               :availability (:availability chosen)
+                               :availability-reason (:availability-reason chosen)})))
             _ (log/log! {:level :info :id ::model-resolved
                          :data {:agent (:party/display-name agent-party)
                                 :family (:family chosen)

@@ -17,9 +17,9 @@
         :budget (parties/get-budget party-id)
         :ui-prefs (parties/get-ui-prefs party-id)
         :mail-accounts (mail/list-accounts party-id)
-        ;; Built server-side: the version rows come from the live catalog
-        ;; crossed with dvergr's registry, so the picker cannot offer a model
-        ;; that would fail at turn time.
+        ;; Built server-side from the same authoritative availability result
+        ;; resolution uses. Curated rows stay visible; unavailable ones carry
+        ;; their disabled state and explanation.
         :model-choices (model-catalog/choices)
         :knowledge-bases (->> (kbs/get-party-kbs party-id)
                               (mapv (fn [kb]
@@ -29,6 +29,10 @@
 #?(:clj
    (defn save-model-server [party-id-str model-id]
      (let [party-id (java.util.UUID/fromString party-id-str)]
+       ;; Browser disabled state is presentation, not authority. Recompute on
+       ;; the server immediately before writing so a forged/stale RPC fails
+       ;; closed too.
+       (model-catalog/require-available-choice! model-id)
        (parties/update-preferred-model! party-id model-id)
        {:success true})))
 

@@ -745,6 +745,34 @@
            {:status :ok :agent-id (str (:party/id agent))})
          :cljs nil))))
 
+#?(:clj
+   (defn update-agent-config-server
+     "Validate and update one agent. Kept outside the RPC macro so the server
+      rejection path is directly testable."
+     [agent-id-str agent-name model-choice system-prompt]
+     (let [agent-uuid (java.util.UUID/fromString agent-id-str)
+           ;; ONE string, two meanings. A `*` marks a family, so the agent
+           ;; follows it and picks up new releases; anything else is a pinned
+           ;; id. Whichever arrives, the OTHER form is cleared.
+           model-patch (when (seq model-choice)
+                         ;; A forged/stale client must pass the exact same
+                         ;; availability decision as the picker and turn path.
+                         (model-catalog/require-available-choice! model-choice)
+                         (if (model-selection/family? model-choice)
+                           {:party/model-family model-choice
+                            :party/model-version :auto
+                            :party/model nil}
+                           {:party/model model-choice
+                            :party/model-family nil
+                            :party/model-version nil}))]
+       (parties/update-agent! agent-uuid
+         (cond-> {}
+           (seq agent-name) (assoc :party/display-name agent-name)
+           (some? system-prompt) (assoc :party/system-prompt system-prompt)
+           model-patch (merge model-patch)))
+       {:status :ok
+        :model-info (room-agents/describe-model (parties/get-party agent-uuid))})))
+
 (defn-spin-remote update-agent-config!
   [server-id agent-id-str agent-name model-choice system-prompt]
   (spin-remote server-id [agent-id-str agent-name model-choice system-prompt]
@@ -752,29 +780,7 @@
           an  (identity agent-name)
           m   (identity model-choice)
           sp  (identity system-prompt)]
-      #?(:clj
-         (let [agent-uuid (java.util.UUID/fromString aid)
-               ;; ONE string, two meanings. A `*` marks a family, so the agent
-               ;; follows it and picks up new releases; anything else is a
-               ;; pinned id. Whichever arrives, the OTHER form is cleared:
-               ;; `resolve-config` lets a family beat a pinned id, so leaving a
-               ;; stale family behind would silently ignore the pin the person
-               ;; just chose. :actor/config is an EDN map, so nil clears.
-               model-patch (when (seq m)
-                             (if (model-selection/family? m)
-                               {:party/model-family m
-                                :party/model-version :auto
-                                :party/model nil}
-                               {:party/model m
-                                :party/model-family nil
-                                :party/model-version nil}))]
-           (parties/update-agent! agent-uuid
-             (cond-> {}
-               (seq an) (assoc :party/display-name an)
-               (some? sp) (assoc :party/system-prompt sp)
-               model-patch (merge model-patch)))
-           {:status :ok
-            :model-info (room-agents/describe-model (parties/get-party agent-uuid))})
+      #?(:clj (update-agent-config-server aid an m sp)
          :cljs nil))))
 
 (defn-spin-remote update-agent-assignment!

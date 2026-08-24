@@ -91,23 +91,29 @@ URL. Supplying `OPENAI_BASE_URL` also marks that record OpenAI-compatible rather
 than native OpenAI, so provider-specific request behavior remains explicit.
 
 An agent stores a model FAMILY (`gpt-*-luna`, `accounts/fireworks/models/glm-*`)
-and either a pinned version or `:auto`; the concrete id is resolved on every
-turn against `/models`, which answers which model ids that credential can
-currently reach (`is.simm.model.model-selection`). It does not supply pricing,
+and either a pinned version or `:auto`; the concrete id is resolved when the
+participant is joined or rejoined. For catalog-backed providers, `/models`
+answers which model ids that credential can currently reach
+(`is.simm.model.model-selection`). It does not supply pricing,
 context limits or capability metadata. Each returned id retains its provider,
 base URL, credential source and reachability; identical URLs therefore remain
-two records. If one fetch fails, only that provider's last-known ids survive,
-marked unreachable and omitted from availability-driven picker rows. An agent
+two records. If one fetch fails, only that provider's last-known ids survive and
+the curated rows remain visible as `:temporarily-unreachable`. The picker and
+resolver share five states: `:available`, `:needs-credential`,
+`:not-implemented` (including a registry gap), `:unavailable-to-account`, and
+`:temporarily-unreachable`. Only `:available` may be saved or executed. An agent
 that stores neither follows its OWNER's preference from Settings, then the code
-default.
+default; an unavailable explicit or inherited choice never falls through to the
+default, a different family, or another provider.
 
-A model must also exist in dvergr's registry, which is where its context window
-capabilities and price per token come from — an unregistered id fails the turn
-rather than running at an unknown cost. `:auto` therefore picks the newest
-version that the provider serves AND the registry knows: Fireworks was serving
-kimi-k3 while the registry stopped at k2p6, and one version behind beats a turn
-that cannot start. No third-party metadata refresh runs in the first agent turn;
-dvergr's registry is the metadata source from process start.
+A model must also exist in dvergr's registry, which is where its context window,
+capabilities and price per token come from. `/models` never adds to that
+registry: a served but unregistered id is shown as “Not yet supported,” while a
+registered id absent from a successful provider response is unavailable to that
+account. `:auto` may select the newest available, registered version inside its
+exact family; a pinned withdrawn version is not silently changed into that
+version. No third-party metadata refresh runs in the first agent turn; dvergr's
+registry is the metadata source from process start.
 
 The PROVIDER is derived from the model, never stored beside it. A stored
 provider is a second thing to keep in sync, and it used to win: every agent

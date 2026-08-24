@@ -1,0 +1,57 @@
+(ns is.simm.uis.web.desktop.model-save-rejection-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [is.simm.agents.room-agents :as room-agents]
+            [is.simm.model.model-catalog :as catalog]
+            [is.simm.model.parties :as parties]
+            [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.settings-remote :as settings-remote]))
+
+(def ^:private party-id "10000000-0000-0000-0000-000000000001")
+(def ^:private unavailable
+  {:value "gpt-*-luna"
+   :availability :needs-credential
+   :availability-reason nil
+   :credential-source "OPENAI_API_KEY"
+   :available? false})
+
+(defn- rejection [f]
+  (try
+    (f)
+    nil
+    (catch clojure.lang.ExceptionInfo e
+      (ex-data e))))
+
+(deftest preferred-model-save-recomputes-and-rejects-unavailability
+  (let [writes (atom [])]
+    (with-redefs [catalog/choice (constantly unavailable)
+                  parties/update-preferred-model!
+                  (fn [& args] (swap! writes conj args))]
+      (let [data (rejection
+                  #(settings-remote/save-model-server party-id "gpt-*-luna"))]
+        (is (= :model-choice-unavailable (:type data)))
+        (is (= :needs-credential (:availability data)))
+        (is (= "OPENAI_API_KEY" (:credential-source data)))
+        (is (empty? @writes) "the rejected preference is not persisted")))))
+
+(deftest agent-model-save-recomputes-and-rejects-unavailability
+  (let [writes (atom [])]
+    (with-redefs [catalog/choice (constantly unavailable)
+                  parties/update-agent! (fn [& args] (swap! writes conj args))
+                  parties/get-party (constantly {})
+                  room-agents/describe-model (constantly {})]
+      (testing "model, name, and prompt are rejected atomically"
+        (let [data (rejection
+                    #(chat-remote/update-agent-config-server
+                      party-id "Forged rename" "gpt-*-luna" "Forged prompt"))]
+          (is (= :model-choice-unavailable (:type data)))
+          (is (= :needs-credential (:availability data)))
+          (is (empty? @writes)))))))
+
+(deftest unknown-values-are-rejected-as-not-implemented
+  (with-redefs [catalog/choice (constantly nil)]
+    (let [data (rejection
+                #(settings-remote/save-model-server party-id
+                                                    "other-provider/model"))]
+      (is (= :model-choice-unavailable (:type data)))
+      (is (= :not-implemented (:availability data)))
+      (is (= :not-curated (:availability-reason data))))))
