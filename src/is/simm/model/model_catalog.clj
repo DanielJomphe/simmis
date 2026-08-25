@@ -78,17 +78,23 @@
 
    Derive version labels from the curated family vocabulary even when a
    withdrawn preference has disappeared from the current shortlist, then fall
-   back to registry metadata and the provider id."
+   back to registry metadata and the provider id.
+
+   nil in, nil out: a selection that resolves to nothing has no name. Without
+   the guard, `(:model curated-entry)` was nil for every family entry, so a nil
+   id matched the first one and an unresolvable OpenAI family was labelled
+   \"GLM\"."
   [id]
-  (let [family (ms/family-of id)
-        version (ms/version-of id)
-        exact-entry (some #(when (= id (:model %)) %) curated)
-        family-entry (some #(when (= family (:family %)) %) curated)]
-    (or (:label exact-entry)
-        (when (and family-entry version)
-          (str (:label family-entry) " " (version-label version)))
-        (:name (registry/get-model id))
-        id)))
+  (when (seq (str id))
+    (let [family (ms/family-of id)
+          version (ms/version-of id)
+          exact-entry (some #(when (= id (:model %)) %) curated)
+          family-entry (some #(when (= family (:family %)) %) curated)]
+      (or (:label exact-entry)
+          (when (and family-entry version)
+            (str (:label family-entry) " " (version-label version)))
+          (:name (registry/get-model id))
+          id))))
 
 (defn preferred-status-copy
   "Status sentence for an unusable preferred version.
@@ -191,7 +197,17 @@
      :availability-explanation
      (str (provider-label provider)
           " model availability could not be refreshed. Last-known status is retained, "
-          "but this choice cannot be used until the provider responds.")}))
+          "but this choice cannot be used until the provider responds.")}
+
+    ;; Total by construction. The five states above are everything
+    ;; `model-selection/availability-state` produces, but this function also
+    ;; renders results that were computed elsewhere. A `case` without this
+    ;; clause threw out of the whole room-details response rather than showing
+    ;; a row as unusable.
+    {:availability-label "Unavailable"
+     :availability-explanation
+     (str (provider-label provider)
+          " could not confirm this model for this account.")}))
 
 (defn- with-availability
   [row]

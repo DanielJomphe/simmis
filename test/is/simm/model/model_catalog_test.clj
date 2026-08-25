@@ -73,6 +73,26 @@
            :fallback? false
            :available? false}))))
 
+(deftest availability-copy-renders-every-state-including-an-unknown-one
+  (doseq [state [:available :needs-credential :not-implemented
+                 :unavailable-to-account :temporarily-unreachable]]
+    (testing state
+      (let [copy (catalog/availability-copy "openai" {:state state})]
+        (is (string? (:availability-label copy)))
+        (is (string? (:availability-explanation copy))))))
+  (testing "a selection that resolved to no candidate still renders"
+    (is (= {:availability-label "Unavailable"
+            :availability-explanation
+            "OpenAI could not confirm this model for this account."}
+           (catalog/availability-copy "openai" nil)))))
+
+(deftest an-unresolved-selection-has-no-label
+  (is (nil? (catalog/model-label nil))
+      "a nil id must not match the first curated family entry")
+  (is (= "GLM 5.2" (catalog/model-label fireworks-model)))
+  (is (= "Qwen3.6 Plus"
+         (catalog/model-label "accounts/fireworks/models/qwen3p6-plus"))))
+
 (deftest every-curated-family-and-model-stays-visible-without-credentials
   (fake/with-server
    (fn [fixture]

@@ -582,7 +582,12 @@
                                (id-for family latest-version)
                                (some->> (first (known-versions-in provider family))
                                         (id-for family))))
-          latest-availability (when latest-candidate
+          ;; Asked unconditionally for a Latest selection, including when the
+          ;; family has no known version at all. `model-availability` answers
+          ;; that with `:not-implemented`/`:registry-missing`, which is the same
+          ;; answer the picker's own family row gets. Returning nil here instead
+          ;; left every display surface without a state to render.
+          latest-availability (when latest?
                                 (model-availability provider latest-candidate))
           fallback-version (when (and preferred?
                                       (not (:available? preferred-availability)))

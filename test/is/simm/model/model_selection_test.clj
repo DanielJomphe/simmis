@@ -240,6 +240,23 @@
         (is (= {:provider :openai :model "gpt-5.5-luna"} selection)
             "fallback is computed, never persisted over the preference")))))
 
+(deftest a-family-with-no-known-version-still-reports-a-state
+  ;; A stored Latest preference can outlive the registry entries behind it.
+  ;; The resolver used to answer that with no availability at all, and every
+  ;; display surface then had nothing to render.
+  (binding [selection/*env-lookup* {"OPENAI_API_KEY" openai-key}]
+    (with-redefs [selection/known-versions-in (fn [_ _] [])
+                  selection/provider-catalog-status
+                  (constantly {:reachability :reachable :served-model-ids #{}})]
+      (let [result (selection/resolve-selection
+                    {:provider :openai :family "gpt-*-luna" :version :auto})]
+        (is (= :latest (:selection-kind result)))
+        (is (nil? (:candidate result)))
+        (is (nil? (:model result)))
+        (is (false? (:available? result)))
+        (is (= :not-implemented (get-in result [:availability :state])))
+        (is (= :registry-missing (get-in result [:availability :reason])))))))
+
 (deftest no-keys-do-not-invent-availability
   (fake/with-server
    (fn [fixture]

@@ -214,6 +214,24 @@
         (is (not (contains? inherited-info :active-model)))
         (is (not (contains? inherited-info :running-model)))))))
 
+(deftest a-preference-whose-family-has-no-known-version-is-reported-not-thrown
+  ;; The registry entries behind a stored family can be gone — an older dvergr
+  ;; on the classpath, or a withdrawn family. Resolution then has no candidate,
+  ;; and `describe-model-resolution` used to throw out of the whole
+  ;; room-details response instead of reporting the row as unusable.
+  (binding [selection/*env-lookup* {}]
+    (selection/reset-catalog!)
+    (with-redefs [selection/known-versions-in (fn [& _] [])]
+      (let [owner-id (seed-owner! "gpt-*-luna")
+            agent (parties/create-agent! owner-id {:display-name "Inherited"})
+            info (room-agents/describe-model-resolution agent)]
+        (is (false? (:available? info)))
+        (is (nil? (:model info)))
+        (is (nil? (:candidate info)))
+        (is (= :needs-credential (:availability info)))
+        (is (= "Credential required" (:availability-label info)))
+        (is (= "GPT Luna (Latest)" (:choice-label info)))))))
+
 (deftest owner-without-preference-is-labelled-as-product-default-inheritance
   (binding [selection/*env-lookup* {}]
     (selection/reset-catalog!)
