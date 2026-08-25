@@ -111,7 +111,7 @@
         (:actor/system-prompt ent) (assoc :party/system-prompt (:actor/system-prompt ent))
         (contains? config :model)         (assoc :party/model (:model config))
         ;; Family + version, resolved to a concrete id per TURN (see
-        ;; is.simm.model.model-selection). A fully pinned :model is the legacy
+        ;; is.simm.model.model-selection). An explicit :model is the legacy
         ;; form — kept working, but it is the thing that froze Vár on glm-5p1.
         (contains? config :model-family)  (assoc :party/model-family (:model-family config))
         (contains? config :model-version) (assoc :party/model-version (:model-version config))
@@ -239,7 +239,7 @@
 
 (def default-model
   "Concrete fallback id. Re-exported from `model-selection`, which owns it.
-   Prefer `default-family` + :auto — a pinned id is exactly what froze Vár on
+   Prefer `default-family` + :auto — a creation-time default is exactly what froze Vár on
    glm-5p1 for eleven days after the code default said 5p2."
   model-selection/default-model)
 
@@ -276,7 +276,7 @@
                                     ;; NO :provider unless one was asked for.
                                     ;; It used to default to :fireworks, and
                                     ;; that stamp then beat the registry at turn
-                                    ;; time, so an agent pinned to gpt-5.5 was
+                                    ;; time, so an agent preferring gpt-5.5 was
                                     ;; still posted to Fireworks. The provider
                                     ;; follows the model now.
                                     :config (cond-> {:auto-respond? auto-respond?}

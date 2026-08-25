@@ -11,7 +11,7 @@
    nobody remembers to write the migration.
 
    So: an agent stores a model only when a HUMAN explicitly overrides its
-   owner's preference — a family with a pinned version or :auto, or an exact
+   owner's preference — a family with a preferred version or :auto, or an exact
    id. With no override it stores no model keys and follows owner preference,
    then the product fallback. The concrete id is computed when the participant
    is joined or rejoined. A new release is picked up by restarting, not by a
@@ -499,7 +499,7 @@
 
 (defn families
   "Families on offer → {family [versions newest-first]}. Powers a UI picker:
-   choose the family, then :auto or a pinned version."
+   choose the family, then :auto or a preferred version."
   []
   (->> (available-catalog)
        (map :model-id)
@@ -518,37 +518,110 @@
   (or (family-of default-model)
       "accounts/fireworks/models/glm-*"))
 
+(defn- auto-version? [version]
+  (or (nil? version) (= version :auto) (= version "auto")))
+
+(defn- newer-version?
+  "Whether `candidate` is strictly newer than `preferred`."
+  [candidate preferred]
+  (pos? (compare (version-key candidate) (version-key preferred))))
+
+(defn- newest-usable-after
+  "Newest usable version strictly after `preferred`, within one provider/family.
+
+   This is the only soft-preference fallback path. Its inputs already carry the
+   configured provider and family, and every candidate is rechecked through the
+   authoritative availability matrix. It therefore cannot reach an older
+   version, another family/provider, or the product default."
+  [provider family preferred]
+  (->> (known-versions-in provider family)
+       (filter #(newer-version? % preferred))
+       (filter #(available-model? provider (id-for family %)))
+       first))
+
 (defn resolve-selection
   "Availability-aware resolution for one stored or incoming selection.
 
-   {:family f :version \"5p2\"} — pinned: the human chose this exact version.
+   {:family f :version \"5p2\"} — the human prefers this explicit version.
    {:family f :version :auto}   — newest AVAILABLE version in that exact family.
-   {:model id}                  — a fully pinned id (legacy configs, and the
-                                  escape hatch for a model with no version).
+   {:model id}                  — an explicit preferred version, or an exact
+                                  unversioned model.
 
-   `:candidate` preserves the exact last-known/requested identity for diagnosis;
-   `:model` is present only when that candidate is executable. A withdrawn pin
-   therefore fails closed instead of silently becoming a newer model, and an
-   unavailable family never crosses to a different family/provider."
+   Latest stores a family and resolves to its newest served, registered,
+   implemented version. An explicit version stays in `:preferred-model` and
+   `:candidate`. While usable, it is also `:model`. If it becomes unusable, the
+   resolver may set `:model`/`:fallback-model` to the newest usable version that
+   is strictly newer in the SAME family and provider. The preference itself is
+   never rewritten, so it resumes automatically if it becomes usable again.
+
+   With no such forward candidate, `:model` is nil. No path here consults a
+   different family/provider or `default-model`."
   [{:keys [model family version provider]}]
   (if-not (or model family)
-    {:candidate nil :model nil :provider nil :availability nil :available? false}
-    (let [provider (or provider (infer-provider (or model family)))
-          auto? (and family (or (nil? version) (= version :auto) (= version "auto")))
-          usable-version (when auto? (newest-usable provider family))
-          candidate (cond
-                      (and model (not family)) model
-                      auto? (if usable-version
-                              (id-for family usable-version)
-                              (some->> (first (known-versions-in provider family))
-                                       (id-for family)))
-                      :else (id-for family version))
-          availability (model-availability provider candidate)]
-      {:candidate candidate
-       :model (when (:available? availability) candidate)
+    {:selection-kind :unconfigured
+     :candidate nil :model nil :provider nil :availability nil
+     :preferred? false :fallback? false :available? false}
+    (let [explicit-model (when-not family model)
+          provider (or provider (infer-provider (or explicit-model family)))
+          latest? (boolean (and family (auto-version? version)))
+          preferred-family (when-not latest?
+                             (or family (family-of explicit-model)))
+          preferred-version (when-not latest?
+                              (or (when family version)
+                                  (version-of explicit-model)))
+          preferred? (boolean (and preferred-family preferred-version))
+          preferred-model (cond
+                            preferred? (or explicit-model
+                                           (id-for preferred-family preferred-version))
+                            explicit-model explicit-model)
+          preferred-availability (when preferred-model
+                                   (model-availability provider preferred-model))
+          latest-version (when latest? (newest-usable provider family))
+          latest-candidate (when latest?
+                             (if latest-version
+                               (id-for family latest-version)
+                               (some->> (first (known-versions-in provider family))
+                                        (id-for family))))
+          latest-availability (when latest-candidate
+                                (model-availability provider latest-candidate))
+          fallback-version (when (and preferred?
+                                      (not (:available? preferred-availability)))
+                             (newest-usable-after provider preferred-family
+                                                  preferred-version))
+          fallback-model (some->> fallback-version
+                                  (id-for preferred-family))
+          fallback-availability (when fallback-model
+                                  (model-availability provider fallback-model))
+          fallback? (boolean (:available? fallback-availability))
+          resolved-model (cond
+                           latest? (when (:available? latest-availability)
+                                     latest-candidate)
+                           (:available? preferred-availability) preferred-model
+                           fallback? fallback-model)
+          resolved-availability (cond
+                                  latest? latest-availability
+                                  fallback? fallback-availability
+                                  :else preferred-availability)
+          candidate (if latest? latest-candidate preferred-model)]
+      {:selection-kind (cond
+                         latest? :latest
+                         preferred? :preferred-version
+                         :else :exact-model)
+       :candidate candidate
+       :model resolved-model
        :provider provider
-       :availability availability
-       :available? (:available? availability)})))
+       :availability resolved-availability
+       :resolved-availability resolved-availability
+       :preferred? preferred?
+       :preferred-model (when preferred? preferred-model)
+       :preferred-family (when preferred? preferred-family)
+       :preferred-version (when preferred? preferred-version)
+       :preferred-availability (when preferred? preferred-availability)
+       :fallback? fallback?
+       :fallback-model (when fallback? fallback-model)
+       :fallback-version (when fallback? fallback-version)
+       :fallback-reason (when fallback? :preferred-version-unavailable)
+       :available? (boolean resolved-model)})))
 
 (defn resolve-model
   "Concrete executable id for `selection`, or nil when it is unavailable."
@@ -558,7 +631,7 @@
 (defn resolve-config
   "Model id for an agent's :actor/config, or nil when it configures no model.
 
-   Honours the family/version form AND a legacy fully-pinned :model — but the
+   Honours the family/version form AND a legacy explicit :model — but the
    family form WINS when both are present, so a migrated agent follows its
    family instead of the stale id we are trying to grow out of."
   [{:keys [model-family model-version model]}]
@@ -570,7 +643,7 @@
 
 (defn resolve-string
   "One string, either form. `gpt-*-luna` is a family at its latest version;
-   `gpt-5.5` is a pinned id.
+   `gpt-5.5` is a preferred version.
 
    One attribute holds both because a person's model preference should not
    freeze the way an agent's config used to. Picking \"latest\" stores the
@@ -589,16 +662,18 @@
    turn will use, `:configured?` is false when the agent chose nothing and
    inherits its owner's preference."
   [{:keys [model-family model-version model]}]
-  (let [auto? (or (nil? model-version) (= model-version :auto) (= model-version "auto"))
+  (let [auto? (auto-version? model-version)
         resolved (resolve-selection {:family model-family
                                      :version model-version
                                      :model (when-not model-family model)})]
-    {:family      model-family
-     :version     (when-not auto? model-version)
-     :auto?       (boolean (and model-family auto?))
-     :model       (:model resolved)
-     :candidate   (:candidate resolved)
-     :provider    (:provider resolved)
-     :availability (:availability resolved)
-     :available?  (:available? resolved)
-     :configured? (boolean (or model-family model))}))
+    (merge
+     (select-keys resolved
+                  [:selection-kind :model :candidate :provider :availability
+                   :resolved-availability :available? :preferred?
+                   :preferred-model :preferred-family :preferred-version
+                   :preferred-availability :fallback? :fallback-model
+                   :fallback-version :fallback-reason])
+     {:family      model-family
+      :version     (when-not auto? model-version)
+      :auto?       (boolean (and model-family auto?))
+      :configured? (boolean (or model-family model))})))

@@ -94,11 +94,29 @@ New agents store no model selection. Persona/template selection supplies the
 role and system prompt, not a hidden model. An agent follows its owner's model
 preference from Settings, then the product fallback when the owner has no
 preference. Only an explicit per-agent override stores a model FAMILY
-(`gpt-*-luna`, `accounts/fireworks/models/glm-*`) with `:auto`, or a pinned
-model id. Clearing that override physically removes the agent's model keys and
-returns it to inheritance; existing explicit choices are not migrated or
+(`gpt-*-luna`, `accounts/fireworks/models/glm-*`) with `:auto`, or a preferred
+model version. Clearing that override physically removes the agent's model keys
+and returns it to inheritance; existing explicit choices are not migrated or
 rewritten. The agent picker presents inheritance as its own first row and names
 whether the current state is inherited or an explicit override.
+
+“Latest” stores the family, not the concrete model id. At resolution time it
+chooses the newest version in that provider/family that is simultaneously
+served to the account, registered in dvergr, and implemented by the provider
+adapter. An explicit version is a **preferred version**. It remains selected
+and is used while usable. If it is withdrawn, resolution may
+fall forward to the newest usable version that is strictly newer in the same
+family and provider. It never considers an older version, another family or
+provider, or the product fallback. With no valid forward candidate, the model
+is unavailable.
+
+The configured preferred id and its resolved fallback are separate fields in
+the resolution result, and only the preference remains in storage. If the
+preferred version later becomes usable again, the next join/rejoin resolves
+back to it automatically; the fallback is never persisted over it. The
+inspector keeps the preferred row selected, labels it “preferred,” names the
+resolved version separately, and explains whether a newer family version is in
+use or no valid forward candidate exists.
 
 The concrete id is resolved when the participant is joined or rejoined. For
 catalog-backed providers, `/models`
@@ -110,24 +128,26 @@ two records. If one fetch fails, only that provider's last-known ids survive and
 the curated rows remain visible as `:temporarily-unreachable`. The picker and
 resolver share five states: `:available`, `:needs-credential`,
 `:not-implemented` (including a registry gap), `:unavailable-to-account`, and
-`:temporarily-unreachable`. Only `:available` may be saved or executed. Saving
-an owner preference, choosing an agent override, and clearing an override into
-inheritance all pass the same server-side availability validation. An
-unavailable explicit or inherited choice never falls through to the default, a
-different family, or another provider.
+`:temporarily-unreachable`. Only an `:available` picker row may be newly saved,
+and only an available resolved target may execute. Saving an owner preference
+or agent override recomputes the row's availability on the server. Clearing an
+override validates the inherited preference through the same soft resolver, so
+a valid same-family forward fallback may execute without replacing the stored
+preference. An unavailable explicit or inherited choice never falls through to
+the default, a different family, or another provider.
 
 A model must also exist in dvergr's registry, which is where its context window,
 capabilities and price per token come from. `/models` never adds to that
 registry: a served but unregistered id is shown as “Not yet supported,” while a
 registered id absent from a successful provider response is unavailable to that
-account. `:auto` may select the newest available, registered version inside its
-exact family; a pinned withdrawn version is not silently changed into that
-version. No third-party metadata refresh runs in the first agent turn; dvergr's
-registry is the metadata source from process start.
+account. `:auto` selects the newest usable version inside its exact family;
+preferred-version fallback uses the same candidate set but accepts only
+strictly newer versions. No third-party metadata refresh runs in the first
+agent turn; dvergr's registry is the metadata source from process start.
 
 The PROVIDER is derived from the model, never stored beside it. A stored
 provider is a second thing to keep in sync, and it used to win: every agent
-created in the UI was stamped `:fireworks` at creation, so pinning one to an
+created in the UI was stamped `:fireworks` at creation, so preferring an
 OpenAI model still posted the request to Fireworks. `room-agents/describe-model`
 resolves model, provider and version together, and both the agent inspector and
 the room settings render exactly what it returns, so no screen can disagree with

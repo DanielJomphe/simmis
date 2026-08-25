@@ -45,6 +45,34 @@
 (defn- curated-values []
   (into #{} (map #(or (:family %) (:model %))) catalog/curated))
 
+(deftest preferred-version-status-keeps-the-preference-selected
+  (let [info {:preferred? true
+              :preferred-model "gpt-5.5-luna"
+              :preferred-family "gpt-*-luna"
+              :preferred-version "5.5"
+              :preferred-availability {:state :unavailable-to-account
+                                       :available? false}
+              :model "gpt-5.6-luna"
+              :candidate "gpt-5.5-luna"
+              :fallback? true
+              :available? true}]
+    (is (= "5.5 unavailable; using a newer Luna"
+           (catalog/preferred-status-copy info)))
+    (is (catalog/selected? {:value "gpt-5.5-luna"} info))
+    (is (not (catalog/selected? {:value "gpt-5.6-luna"} info))
+        "the fallback never replaces the selected preference")))
+
+(deftest preferred-version-without-forward-candidate-has-unavailable-copy
+  (is (= "5.6 unavailable; no newer Luna is usable"
+         (catalog/preferred-status-copy
+          {:preferred? true
+           :preferred-family "gpt-*-luna"
+           :preferred-version "5.6"
+           :preferred-availability {:state :unavailable-to-account
+                                    :available? false}
+           :fallback? false
+           :available? false}))))
+
 (deftest every-curated-family-and-model-stays-visible-without-credentials
   (fake/with-server
    (fn [fixture]

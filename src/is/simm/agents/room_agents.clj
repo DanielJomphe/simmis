@@ -2046,7 +2046,7 @@
    The REGISTRY answers first, ahead of the caller's hint. An id the registry
    knows carries its own provider, and the hint is usually not a choice anybody
    made: every agent created through the UI used to be stamped
-   `:party/provider :fireworks` at creation, so pinning one to gpt-5.5 sent the
+   `:party/provider :fireworks` at creation, so preferring gpt-5.5 sent the
    request to Fireworks, which 404s it. A hint still wins for an id the registry
    has never heard of, which is how a custom OpenAI-compatible endpoint gets
    addressed.
@@ -2079,27 +2079,50 @@
   [selection provider-hint]
   (let [model (:model selection)
         candidate (:candidate selection)
+        preferred-model (:preferred-model selection)
+        preference-model (or preferred-model candidate model)
         display-model (or model candidate)
         provider (or (:provider selection)
                      (resolve-provider display-model provider-hint))
-        availability (:availability selection)]
-    (as-> {:model model
-           :candidate candidate
-           :family (:family selection)
+        availability (:availability selection)
+        preferred-availability (:preferred-availability selection)
+        preferred-copy (when preferred-availability
+                         (model-catalog/availability-copy
+                          provider preferred-availability))
+        resolution-status (model-catalog/preferred-status-copy selection)
+        resolution-status-explanation
+        (when resolution-status
+          (str (:availability-explanation preferred-copy)
+               (when (:fallback? selection)
+                 (str " The preferred version remains configured and will be "
+                      "used again automatically when it becomes usable."))))]
+    (as-> (merge
+           (select-keys selection
+                        [:selection-kind :model :candidate :preferred?
+                         :preferred-model :preferred-family :preferred-version
+                         :fallback? :fallback-model :fallback-version
+                         :fallback-reason])
+           {:family (:family selection)
            :version (:version selection)
            :auto? (:auto? selection)
            :available? (:available? selection)
            :availability (:state availability)
            :availability-reason (:reason availability)
+           :preferred-availability (:state preferred-availability)
+           :preferred-availability-reason (:reason preferred-availability)
            :provider provider
            :provider-label (model-catalog/provider-label provider)
            :model-short (model-catalog/short-id display-model)
+           :resolved-label (when model (model-catalog/model-label model))
+           :resolution-status resolution-status
+           :resolution-status-explanation resolution-status-explanation
            :no-reasoning?
            (model-catalog/reasoning-disabled-for-tools? provider display-model)
-           :label (or (:name (registry/get-model display-model)) display-model)} info
+           :label (or (model-catalog/model-label preference-model)
+                      preference-model)}) info
       ;; The label the PICKER uses for this same choice. The configuration panel
       ;; prints it verbatim, so the two cannot drift into separate vocabularies
-      ;; ("family latest" against "(latest)") the way they did.
+      ;; ("family latest" against "(Latest)") the way they did.
       (merge info
              (model-catalog/reasoning-copy (:no-reasoning? info))
              (model-catalog/availability-copy provider availability)
@@ -2275,7 +2298,13 @@
             _ (log/log! {:level :info :id ::model-resolved
                          :data {:agent (:party/display-name agent-party)
                                 :family (:family chosen)
-                                :version (or (:version chosen) (when (:auto? chosen) :auto) :pinned-id)
+                                :version (or (:preferred-version chosen)
+                                             (:version chosen)
+                                             (when (:auto? chosen) :auto)
+                                             :exact-model)
+                                :preferred-model (:preferred-model chosen)
+                                :fallback? (:fallback? chosen)
+                                :fallback-reason (:fallback-reason chosen)
                                 :inherited? (:inherited? chosen)
                                 :provider provider
                                 :model model}})

@@ -747,16 +747,20 @@
      (let [agent-uuid (java.util.UUID/fromString agent-id-str)
            agent (parties/get-party agent-uuid)
            ;; ONE string, two meanings. A `*` marks a family, so the agent
-           ;; follows it and picks up new releases; anything else is a pinned
-           ;; id. Whichever arrives, the OTHER form is cleared.
+           ;; follows it and picks up new releases; anything else is an exact
+           ;; preferred version/model. Whichever arrives, the OTHER form is
+           ;; cleared.
            model-patch
            (cond
              (= model-catalog/inherit-choice-value model-choice)
              (let [{:keys [value]} (room-agents/inheritance-choice agent)]
                ;; Clearing is a selection too. Validate the owner's preference
                ;; (or product fallback when the owner has none) before removing
-               ;; the explicit keys, so stale/forged clients fail closed.
-               (model-catalog/require-available-choice! value)
+               ;; the explicit keys, so stale/forged clients fail closed. An
+               ;; already-stored preferred version may resolve through its
+               ;; newer same-family/provider fallback; validating only its now-
+               ;; withdrawn picker row would incorrectly reject inheritance.
+               (model-catalog/require-usable-preference! value)
                {:party/model nil
                 :party/model-family nil
                 :party/model-version nil

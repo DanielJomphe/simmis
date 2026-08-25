@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.model-catalog :as catalog]
+            [is.simm.model.model-selection :as selection]
             [is.simm.model.parties :as parties]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
             [is.simm.uis.web.desktop.settings-remote :as settings-remote]))
@@ -46,6 +47,31 @@
           (is (= :model-choice-unavailable (:type data)))
           (is (= :needs-credential (:availability data)))
           (is (empty? @writes)))))))
+
+(deftest clearing-an-override-accepts-an-inherited-soft-fallback
+  (let [writes (atom [])]
+    (with-redefs [parties/get-party (constantly {})
+                  parties/update-agent! (fn [& args] (swap! writes conj args))
+                  room-agents/inheritance-choice
+                  (constantly {:value "gpt-5.5-luna"
+                               :source :owner-preference})
+                  room-agents/describe-model (constantly {})
+                  selection/resolve-selection
+                  (constantly {:preferred-model "gpt-5.5-luna"
+                               :model "gpt-5.6-luna"
+                               :fallback? true
+                               :fallback-reason :preferred-version-unavailable
+                               :available? true})]
+      (is (= :ok
+             (:status
+              (chat-remote/update-agent-config-server
+               party-id "" catalog/inherit-choice-value nil))))
+      (is (= 1 (count @writes)))
+      (is (= {:party/model nil
+              :party/model-family nil
+              :party/model-version nil
+              :party/provider nil}
+             (second (first @writes)))))))
 
 (deftest unknown-values-are-rejected-as-not-implemented
   (with-redefs [catalog/choice (constantly nil)]

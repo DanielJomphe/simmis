@@ -7,7 +7,7 @@
    provider and registry facts. Availability is explicit on every row; a family
    never disappears merely because its credential or account access does.
 
-   Hand-writing both halves is what made the list incoherent: GLM had a pinned
+   Hand-writing both halves is what made the list incoherent: GLM had a preferred
    5.2 row because someone typed one, while the GPT families had none because
    nobody did. Now every family gets the same treatment by construction, and a
    version that ships stops being invisible until a human notices."
@@ -16,7 +16,7 @@
             [dvergr.model.registry :as registry]))
 
 (def curated
-  "Ordered. A `:family` entry expands into a `latest` row plus one row per
+  "Ordered. A `:family` entry expands into a Latest row plus one row per
    version on offer; a `:model` entry is a single row for something that has no
    version to follow."
   [{:family "accounts/fireworks/models/glm-*" :label "GLM" :provider "fireworks"}
@@ -38,7 +38,7 @@
   "Sentinel sent by the first-class agent picker row that clears an override."
   "__inherit-owner-preference__")
 
-(defn- version-label
+(defn version-label
   "A version token as a person writes it. `5p2` is Fireworks' spelling of 5.2,
    and `k2p6` of K2.6."
   [v]
@@ -66,6 +66,47 @@
 
 (defn provider-label [provider]
   (get provider-labels (keyword provider) (some-> provider name)))
+
+(defn family-label
+  "Curated person-facing name for `family`, or the family string as a fallback."
+  [family]
+  (or (some #(when (= family (:family %)) (:label %)) curated)
+      family))
+
+(defn model-label
+  "Person-facing explicit-version/model label for a concrete id.
+
+   Derive version labels from the curated family vocabulary even when a
+   withdrawn preference has disappeared from the current shortlist, then fall
+   back to registry metadata and the provider id."
+  [id]
+  (let [family (ms/family-of id)
+        version (ms/version-of id)
+        exact-entry (some #(when (= id (:model %)) %) curated)
+        family-entry (some #(when (= family (:family %)) %) curated)]
+    (or (:label exact-entry)
+        (when (and family-entry version)
+          (str (:label family-entry) " " (version-label version)))
+        (:name (registry/get-model id))
+        id)))
+
+(defn preferred-status-copy
+  "Status sentence for an unusable preferred version.
+
+   The shorter family noun makes the UI read 'using a newer Luna' while the
+   Model and Resolves-to rows keep the full 'GPT Luna 5.x' labels."
+  [{:keys [preferred? preferred-family preferred-version
+           preferred-availability fallback? available?]}]
+  (when (and preferred? (not (:available? preferred-availability)))
+    (let [family-name (family-label preferred-family)
+          short-family (if (str/starts-with? family-name "GPT ")
+                         (subs family-name 4)
+                         family-name)
+          version-name (version-label preferred-version)]
+      (cond
+        fallback? (str version-name " unavailable; using a newer " short-family)
+        (not available?) (str version-name " unavailable; no newer "
+                              short-family " is usable")))))
 
 (def reasoning-off-copy
   "ONE phrase for the reasoning caveat. The configuration panel puts it after a
@@ -117,10 +158,10 @@
    :reasoning-explanation (when no-reasoning? reasoning-off-explanation)})
 
 (def ^:private max-versions
-  "How many pinned versions to offer under a family.
+  "How many preferred versions to offer under a family.
 
-   A picker is a shortlist, not an archive: two keeps `latest` plus the nearest
-   explicit pins. Server validation accepts only rows in this shortlist."
+   A picker is a shortlist, not an archive: two keeps Latest plus the nearest
+   explicit versions. Server validation accepts only rows in this shortlist."
   2)
 
 (defn availability-copy
@@ -166,7 +207,7 @@
            (provenance (:provider row) (:resolves row)))))
 
 (defn- family-rows
-  "One always-visible `latest` row, then last-known/registered version rows."
+  "One always-visible Latest row, then last-known/registered version rows."
   [{:keys [family label provider]}]
   (let [versions (take max-versions (ms/known-versions-in provider family))
         latest-id (:candidate (ms/resolve-selection {:family family
@@ -175,7 +216,7 @@
     (into [(with-availability
             {:kind :family
              :value family
-             :label (str label " (latest)")
+             :label (str label " (Latest)")
              :provider provider
              :provider-label (provider-label provider)
              :resolves latest-id
@@ -229,13 +270,38 @@
                                                 :not-curated)
                        :credential-source (:credential-source row)})))))
 
+(defn require-usable-preference!
+  "Resolve an already-stored preference and require an executable result.
+
+   Unlike `require-available-choice!`, this accepts a preferred version whose
+   own row was withdrawn when a newer same-family/provider fallback is usable.
+   It is used when an agent returns to owner inheritance: the preference was
+   previously persisted, and validation must follow the same soft-resolution
+   policy as runtime execution without rewriting that preference."
+  [value]
+  (let [resolved (if (ms/family? value)
+                   (ms/resolve-selection {:family value :version :auto})
+                   (ms/resolve-selection {:model value}))
+        availability (:availability resolved)]
+    (if (:available? resolved)
+      resolved
+      (throw (ex-info "Model preference is unavailable"
+                      {:type :model-choice-unavailable
+                       :model-choice value
+                       :availability (or (:state availability) :not-implemented)
+                       :availability-reason (or (:reason availability)
+                                                :no-same-family-forward-candidate)
+                       :preferred-model (:preferred-model resolved)
+                       :provider (:provider resolved)
+                       :credential-source (:credential-source availability)})))))
+
 (defn selected?
   "Is `row` the one this config uses? `model-info` comes from
    `room-agents/describe-model`."
-  [row {:keys [family auto? model candidate]}]
+  [row {:keys [family auto? model candidate preferred-model]}]
   (if (and family auto?)
     (= (:value row) family)
-    (= (:value row) (or model candidate))))
+    (= (:value row) (or preferred-model candidate model))))
 
 (defn choice-label
   "The picker's own label for what this config selected, so the configuration

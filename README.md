@@ -113,7 +113,11 @@ Agents need a model. Provider keys come from the environment —
 registered only when its key is present. The explicit default, used only when
 nobody selected a model, is `accounts/fireworks/models/glm-5p2`, so
 `FIREWORKS_API_KEY` is the path of least resistance. An unavailable selection
-never falls through to that default or another family/provider. `OPENAI_API_KEY`
+never falls through to that default or another family/provider. Latest stores a
+family and follows its newest usable version. An explicit version is preserved
+as the preferred version; if withdrawn, it may use only a newer usable version
+in the same family and provider, and automatically returns to the preferred
+version if it reappears. `OPENAI_API_KEY`
 on its own reaches OpenAI (the GPT-5.6 and GPT-5.5
 models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
 endpoint, including a local one. Fireworks always uses its own base and
@@ -121,10 +125,10 @@ endpoint, including a local one. Fireworks always uses its own base and
 agent's model can also be set per room in its settings. The picker keeps every
 curated family visible and marks rows as available, credential-required, not yet
 supported, unavailable to the account, or temporarily unreachable; only
-available rows can be saved or run. New agents inherit their owner's validated
-preference (then the product default) without storing a model; the per-agent
-picker identifies inherited state, and clearing an explicit override returns to
-that inheritance chain.
+available rows can be newly saved, and only an available resolved target can
+run. New agents inherit their owner's validated preference (then the product
+default) without storing a model; the per-agent picker identifies inherited
+state, and clearing an explicit override returns to that inheritance chain.
 
 ### Production build
 

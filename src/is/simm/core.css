@@ -7361,7 +7361,7 @@ body.tab-dragging .column-drop-zone {
   font-weight: 600;
 }
 
-/* A pinned version sits under its family row, indented and quieter, so the
+/* A preferred version sits under its family row, indented and quieter, so the
    list reads as families with versions rather than a flat wall of names. */
 .settings-model-name--version {
   padding-left: var(--spacing-md);

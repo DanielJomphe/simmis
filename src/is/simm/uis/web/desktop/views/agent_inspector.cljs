@@ -102,16 +102,18 @@
             ;; (room-agents/describe-model). Reading :party/model directly is
             ;; what used to print "—" for an agent following a family, next to
             ;; a provider it never chose.
-            (let [{:keys [model candidate model-short choice-label provider-label no-reasoning?
-                          reasoning-copy reasoning-explanation selection-label available?
-                          availability-label availability-explanation]} chosen
+            (let [{:keys [model candidate preferred? resolved-label choice-label
+                          provider-label no-reasoning? reasoning-copy
+                          reasoning-explanation selection-label available?
+                          availability-label availability-explanation
+                          resolution-status resolution-status-explanation]} chosen
                   display-model (or model candidate)]
               (el/div {:class "agent-inspector-section"}
                 (el/h3 {:class "agent-inspector-section-title"} "Configuration")
                 (el/div {:class "agent-inspector-config"}
                   ;; The PICKER's own label, printed verbatim. Composing a
                   ;; second name here is what produced "family latest" beside a
-                  ;; list that says "(latest)".
+                  ;; list that says "(Latest)".
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Selection")
                     (el/span {:class "agent-inspector-value"}
@@ -119,22 +121,31 @@
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Model")
                     (el/span {:class "agent-inspector-value"}
-                      (or choice-label display-model "—")))
-                  ;; The short id, so every provider reads the same way here.
-                  ;; The full id stays one hover away for the path-addressed
-                  ;; ones.
+                      (str (or choice-label display-model "—")
+                           (when preferred? " · preferred"))))
+                  ;; Use the same friendly explicit-version label as the picker;
+                  ;; the provider id stays one hover away for diagnosis.
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Resolves to")
                     (el/span {:class (vc/class-names "agent-inspector-value"
-                                                     "agent-inspector-value--mono"
-                                                     (when (not= display-model model-short) "has-tooltip"))
-                              :data-tooltip (or display-model "")}
-                      (or model-short display-model "—")))
+                                                     (when model "has-tooltip"))
+                              :data-tooltip (or model "")}
+                      (or resolved-label "—")))
+                  (when resolution-status
+                    (el/div {:class "agent-inspector-row"}
+                      (el/span {:class "agent-inspector-label"} "Status")
+                      (el/span {:class (vc/class-names
+                                        "agent-inspector-value"
+                                        "has-tooltip"
+                                        (when-not available?
+                                          "agent-inspector-value--unavailable"))
+                                :data-tooltip (or resolution-status-explanation "")}
+                        resolution-status)))
                   (el/div {:class "agent-inspector-row"}
                     (el/span {:class "agent-inspector-label"} "Provider")
                     (el/span {:class "agent-inspector-value"}
                       (or provider-label "unknown")))
-                  (when-not available?
+                  (when (and (not available?) (not resolution-status))
                     (el/div {:class "agent-inspector-row"}
                       (el/span {:class "agent-inspector-label"} "Availability")
                       (el/span {:class "agent-inspector-value agent-inspector-value--unavailable"
@@ -158,7 +169,7 @@
                     (el/span {:class "agent-inspector-value"}
                       (if (:party/auto-respond? agent-config) "Yes" "No"))))))
 
-            ;; Model picker. Same list Settings shows, same meaning: a "latest"
+            ;; Model picker. Same list Settings shows, same meaning: a Latest
             ;; row stores the family so releases arrive on their own.
             (el/div {:class "agent-inspector-section"}
               (el/h3 {:class "agent-inspector-section-title"} "Model")
@@ -176,8 +187,9 @@
                                                              (:auto? chosen))
                                                       (= (:value c) (:family chosen))
                                                       (= (:value c)
-                                                         (or (:model chosen)
-                                                             (:candidate chosen))))))))
+                                                         (or (:preferred-model chosen)
+                                                             (:candidate chosen)
+                                                             (:model chosen))))))))
                                  (:model-choices admin-data))]
                   (ifor-each :value rows
                     (fn [row]
@@ -223,7 +235,7 @@
                              (let [ta (.getElementById js/document (str "agent-inspector-prompt-" agent-id))
                                    sp (.-value ta)
                                    ;; "" for the model choice: this button saves
-                                   ;; the prompt, and must not re-pin a model.
+                                   ;; the prompt, and must not restore a model choice.
                                    s  (chat-remote/update-agent-config!
                                         web/server-id agent-id agent-name "" sp)]
                                (s (fn [_]

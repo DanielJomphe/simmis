@@ -62,7 +62,7 @@
   (let [owner-id (seed-owner! "gpt-*-luna")
         existing (parties/create-agent!
                   owner-id
-                  {:display-name "Pinned"
+                  {:display-name "Preferred"
                    :model "gpt-5.5"
                    :provider :openai
                    :template :researcher})
@@ -115,6 +115,10 @@
                   (fn [value]
                     (swap! validated conj value)
                     {:value value :available? true})
+                  catalog/require-usable-preference!
+                  (fn [value]
+                    (swap! validated conj value)
+                    {:value value :available? true})
                   room-agents/describe-model identity]
       (testing "an exact override stores only the exact model form"
         (chat-remote/update-agent-config-server agent-id "" "gpt-5.5" nil)
@@ -137,9 +141,13 @@
 (deftest owner-without-preference-inherits-the-validated-product-default
   (let [owner-id (seed-owner!)
         agent (parties/create-agent!
-               owner-id {:display-name "Pinned" :model "gpt-5.5"})
+               owner-id {:display-name "Preferred" :model "gpt-5.5"})
         validated (atom [])]
     (with-redefs [catalog/require-available-choice!
+                  (fn [value]
+                    (swap! validated conj value)
+                    {:value value :available? true})
+                  catalog/require-usable-preference!
                   (fn [value]
                     (swap! validated conj value)
                     {:value value :available? true})
@@ -154,9 +162,9 @@
   (let [owner-choice "gpt-*-luna"
         owner-id (seed-owner! owner-choice)
         agent (parties/create-agent!
-               owner-id {:display-name "Pinned" :model "gpt-5.5"})
+               owner-id {:display-name "Preferred" :model "gpt-5.5"})
         before (stored-config (:party/id agent))]
-    (with-redefs [catalog/require-available-choice!
+    (with-redefs [catalog/require-usable-preference!
                   (fn [value]
                     (throw (ex-info "Model choice is unavailable"
                                     {:type :model-choice-unavailable
@@ -189,7 +197,7 @@
         (is (= "Inherited from owner preference" (:selection-label inherited-info))))
       (testing "the first-class row names and validates the resolved owner preference"
         (is (= catalog/inherit-choice-value (:value inherit-row)))
-        (is (= "Use owner preference — GPT Luna (latest)" (:label inherit-row)))
+        (is (= "Use owner preference — GPT Luna (Latest)" (:label inherit-row)))
         (is (= :owner-preference (:inheritance-source inherit-row)))
         (is (false? (:available? inherit-row))))
       (testing "an existing explicit choice stays visibly explicit"

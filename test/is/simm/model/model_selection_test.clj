@@ -105,31 +105,140 @@
            :catalog-required? true :catalog-reachability :reachable
            :served? true}))))
 
-(deftest resolution-never-substitutes-an-unavailable-pin
-  (let [state (fn [id]
-                {:state (if (= id "gpt-5.5") :available :unavailable-to-account)
-                 :available? (= id "gpt-5.5")
-                 :provider :openai
-                 :model-id id})]
+(defn- availability-stub [usable seen]
+  (fn
+    ([id]
+     ((availability-stub usable seen) (selection/infer-provider id) id))
+    ([provider id]
+     (swap! seen conj [provider id])
+     (let [available? (contains? @usable [(keyword provider) id])]
+       {:state (if available? :available :unavailable-to-account)
+        :available? available?
+        :provider (keyword provider)
+        :model-id id}))))
+
+(deftest latest-stores-a-family-and-upgrades-to-the-newest-usable-version
+  (let [versions (atom ["5.5"])
+        usable (atom #{[:openai "gpt-5.5-luna"]})
+        seen (atom [])]
+    (with-redefs [selection/known-versions-in (fn [_ _] @versions)
+                  selection/model-availability (availability-stub usable seen)]
+      (let [selection {:provider :openai
+                       :family "gpt-*-luna"
+                       :version :auto}
+            before (selection/resolve-selection selection)]
+        (is (= :latest (:selection-kind before)))
+        (is (= "gpt-5.5-luna" (:model before)))
+        (is (false? (:preferred? before)))
+        (reset! versions ["5.6" "5.5"])
+        (swap! usable conj [:openai "gpt-5.6-luna"])
+        (let [after (selection/resolve-selection selection)]
+          (is (= "gpt-5.6-luna" (:model after)))
+          (is (= "gpt-*-luna" (:family selection))
+              "Latest remains a stored family rather than becoming a version"))))))
+
+(deftest preferred-version-remains-selected-while-usable
+  (let [usable (atom #{[:openai "gpt-5.5-luna"]})
+        seen (atom [])]
     (with-redefs [selection/known-versions-in (fn [_ _] ["5.6" "5.5"])
-                  selection/model-availability (fn
-                                                 ([id] (state id))
-                                                 ([_ id] (state id)))]
-      (testing "latest has an explicit within-family meaning"
-        (is (= "gpt-5.5"
-               (selection/resolve-model {:provider :openai
-                                         :family "gpt-*"
-                                         :version :auto}))))
-      (testing "a withdrawn pin fails closed instead of becoming latest"
-        (let [result (selection/resolve-selection {:provider :openai
-                                                   :family "gpt-*"
-                                                   :version "5.6"})]
-          (is (= "gpt-5.6" (:candidate result)))
-          (is (nil? (:model result)))
-          (is (false? (:available? result)))))
-      (testing "an unavailable exact id does not become the code default"
-        (is (nil? (selection/resolve-model {:provider :openai
-                                            :model "gpt-5.6"})))))))
+                  selection/model-availability (availability-stub usable seen)]
+      (let [result (selection/resolve-selection
+                    {:provider :openai :model "gpt-5.5-luna"})]
+        (is (= :preferred-version (:selection-kind result)))
+        (is (= "gpt-5.5-luna" (:preferred-model result)))
+        (is (= "gpt-5.5-luna" (:candidate result)))
+        (is (= "gpt-5.5-luna" (:model result)))
+        (is (false? (:fallback? result)))
+        (is (:available? result))))))
+
+(deftest withdrawn-preferred-version-falls-forward-within-family
+  (let [usable (atom #{[:openai "gpt-5.6-luna"]})
+        seen (atom [])]
+    (with-redefs [selection/known-versions-in (fn [provider family]
+                                               (is (= :openai provider))
+                                               (is (= "gpt-*-luna" family))
+                                               ["5.6" "5.5"])
+                  selection/model-availability (availability-stub usable seen)]
+      (let [result (selection/resolve-selection
+                    {:provider :openai
+                     :family "gpt-*-luna"
+                     :version "5.5"})]
+        (is (= "gpt-5.5-luna" (:preferred-model result)))
+        (is (= :unavailable-to-account
+               (get-in result [:preferred-availability :state])))
+        (is (= "gpt-5.6-luna" (:model result)))
+        (is (= "gpt-5.6-luna" (:fallback-model result)))
+        (is (= :preferred-version-unavailable (:fallback-reason result)))
+        (is (:fallback? result))
+        (is (:available? result))
+        (is (= :available (get-in result [:resolved-availability :state])))))))
+
+(deftest unavailable-preferred-version-with-no-newer-candidate-is-unavailable
+  (let [usable (atom #{[:openai "gpt-5.4-luna"]
+                       [:fireworks selection/default-model]})
+        seen (atom [])]
+    (with-redefs [selection/known-versions-in (fn [_ _] ["5.6" "5.5" "5.4"])
+                  selection/model-availability (availability-stub usable seen)]
+      (let [result (selection/resolve-selection
+                    {:provider :openai :model "gpt-5.5-luna"})]
+        (is (= "gpt-5.5-luna" (:preferred-model result)))
+        (is (nil? (:model result)))
+        (is (false? (:fallback? result)))
+        (is (false? (:available? result)))
+        (is (not-any? #(= [:openai "gpt-5.4-luna"] %) @seen)
+            "an older usable version is never considered")
+        (is (not-any? #(= [:fireworks selection/default-model] %) @seen)
+            "the product fallback is never considered")))))
+
+(deftest preferred-fallback-refuses-other-families
+  (let [usable (atom #{[:openai "gpt-5.6-sol"]
+                       [:fireworks selection/default-model]})
+        seen (atom [])]
+    (with-redefs [selection/known-versions-in
+                  (fn [provider family]
+                    (is (= [:openai "gpt-*-luna"] [provider family]))
+                    ["5.5"])
+                  selection/model-availability (availability-stub usable seen)]
+      (let [result (selection/resolve-selection
+                    {:provider :openai :model "gpt-5.5-luna"})]
+        (is (nil? (:model result)))
+        (is (every? #(= "gpt-5.5-luna" (second %)) @seen))
+        (is (false? (:available? result)))))))
+
+(deftest preferred-fallback-is-provider-isolated
+  (let [usable (atom #{[:fireworks "gpt-5.6-luna"]})
+        seen (atom [])]
+    (with-redefs [selection/known-versions-in
+                  (fn [provider family]
+                    (is (= [:openai "gpt-*-luna"] [provider family]))
+                    ["5.6" "5.5"])
+                  selection/model-availability (availability-stub usable seen)]
+      (let [result (selection/resolve-selection
+                    {:provider :openai :model "gpt-5.5-luna"})]
+        (is (nil? (:model result)))
+        (is (false? (:fallback? result)))
+        (is (every? #(= :openai (first %)) @seen)
+            "another provider's same-looking id is never consulted")))))
+
+(deftest preferred-version-recovers-automatically-when-it-reappears
+  (let [usable (atom #{[:openai "gpt-5.6-luna"]})
+        seen (atom [])
+        selection {:provider :openai :model "gpt-5.5-luna"}]
+    (with-redefs [selection/known-versions-in (fn [_ _] ["5.6" "5.5"])
+                  selection/model-availability (availability-stub usable seen)]
+      (let [during-withdrawal (selection/resolve-selection selection)]
+        (is (= "gpt-5.5-luna" (:preferred-model during-withdrawal)))
+        (is (= "gpt-5.6-luna" (:model during-withdrawal)))
+        (is (:fallback? during-withdrawal)))
+      (swap! usable conj [:openai "gpt-5.5-luna"])
+      (let [after-recovery (selection/resolve-selection selection)]
+        (is (= "gpt-5.5-luna" (:preferred-model after-recovery)))
+        (is (= "gpt-5.5-luna" (:model after-recovery)))
+        (is (false? (:fallback? after-recovery)))
+        (is (= :available
+               (get-in after-recovery [:preferred-availability :state])))
+        (is (= {:provider :openai :model "gpt-5.5-luna"} selection)
+            "fallback is computed, never persisted over the preference")))))
 
 (deftest no-keys-do-not-invent-availability
   (fake/with-server

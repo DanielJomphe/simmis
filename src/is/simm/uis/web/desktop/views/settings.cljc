@@ -215,7 +215,7 @@
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Model Preference")
           (el/p {:class "settings-section-desc"}
-            "The preference agents inherit when they resolve a model. A \"latest\" choice tracks new releases; a version pins one.")
+            "The preference agents inherit when they resolve a model. Latest tracks new releases; an explicit choice is the preferred version and may use only a newer version in the same family and provider if withdrawn.")
           (el/div {:class "settings-model-list"}
             ;; `selected?` lives IN the item; the key stays the model value.
             ;; ifor-each memoizes on item equality and cannot see a closure
