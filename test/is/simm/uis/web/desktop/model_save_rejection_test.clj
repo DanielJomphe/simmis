@@ -81,3 +81,19 @@
       (is (= :model-choice-unavailable (:type data)))
       (is (= :not-implemented (:availability data)))
       (is (= :not-curated (:availability-reason data))))))
+
+(deftest a-curated-row-is-never-reported-as-uncurated
+  (testing "a curated row that needs a credential reports no sub-reason"
+    (with-redefs [catalog/choice (constantly unavailable)]
+      (let [data (rejection
+                  #(settings-remote/save-model-server party-id "gpt-*-luna"))]
+        (is (= :needs-credential (:availability data)))
+        (is (nil? (:availability-reason data))))))
+  (testing "a curated row keeps the reason it does carry"
+    (with-redefs [catalog/choice
+                  (constantly (assoc unavailable
+                                     :availability :not-implemented
+                                     :availability-reason :registry-missing))]
+      (let [data (rejection
+                  #(settings-remote/save-model-server party-id "gpt-*-luna"))]
+        (is (= :registry-missing (:availability-reason data)))))))

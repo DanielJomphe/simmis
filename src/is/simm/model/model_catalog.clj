@@ -302,8 +302,13 @@
                       {:type :model-choice-unavailable
                        :model-choice value
                        :availability (or (:availability row) :not-implemented)
-                       :availability-reason (or (:availability-reason row)
-                                                :not-curated)
+                       ;; `:not-curated` describes a value the list does not
+                       ;; offer. A curated row that merely needs a credential
+                       ;; carries no sub-reason, and an `or` turned that nil
+                       ;; into the claim that GLM 5.2 is not curated.
+                       :availability-reason (if row
+                                              (:availability-reason row)
+                                              :not-curated)
                        :credential-source (:credential-source row)})))))
 
 (defn require-usable-preference!
