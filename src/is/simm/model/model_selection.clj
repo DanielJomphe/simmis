@@ -497,6 +497,31 @@
                          :using (first usable)}}))
      (first usable))))
 
+(defn newest-supported
+  "Newest version of `family` this build can RUN, ignoring reachability.
+
+   `newest-usable` answers `:auto` and is gated on everything, reachability
+   included. When it finds nothing, something must still be NAMED: the picker
+   shows a Latest row and the resolver reports why that row is unusable. Naming
+   the newest KNOWN version instead picked up ids a provider serves but dvergr
+   does not implement, so a Fireworks outage relabelled the Kimi family
+   \"Not yet supported\" and pointed the row at kimi-k3 — a model simmis would
+   never run — while the k2p6 row beside it correctly read
+   \"Temporarily unreachable\".
+
+   Registered for this provider and implemented by its adapter is the honest
+   name. The reason then comes from that candidate's own availability."
+  [provider family]
+  (let [provider (some-> provider keyword)
+        implemented (:implemented-api-types (provider-contract provider))]
+    (->> (known-versions-in provider family)
+         (filter (fn [version]
+                   (let [definition (registry/get-model (id-for family version))]
+                     (and definition
+                          (= provider (:provider definition))
+                          (contains? implemented (:api-type definition))))))
+         first)))
+
 (defn families
   "Families on offer → {family [versions newest-first]}. Powers a UI picker:
    choose the family, then :auto or a preferred version."
@@ -578,10 +603,10 @@
                                    (model-availability provider preferred-model))
           latest-version (when latest? (newest-usable provider family))
           latest-candidate (when latest?
-                             (if latest-version
-                               (id-for family latest-version)
-                               (some->> (first (known-versions-in provider family))
-                                        (id-for family))))
+                             (some->> (or latest-version
+                                          (newest-supported provider family)
+                                          (first (known-versions-in provider family)))
+                                      (id-for family)))
           ;; Asked unconditionally for a Latest selection, including when the
           ;; family has no known version at all. `model-availability` answers
           ;; that with `:not-implemented`/`:registry-missing`, which is the same

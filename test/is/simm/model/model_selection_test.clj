@@ -240,6 +240,23 @@
         (is (= {:provider :openai :model "gpt-5.5-luna"} selection)
             "fallback is computed, never persisted over the preference")))))
 
+(deftest latest-names-the-newest-supported-version-when-none-is-usable
+  ;; Under an outage or a missing credential nothing in the family is usable,
+  ;; but the Latest row still has to name something. Naming the newest KNOWN
+  ;; version picked up ids the provider serves and dvergr does not implement,
+  ;; which reported a reachability problem as "Not yet supported".
+  (binding [selection/*env-lookup* {}]
+    (with-redefs [selection/known-versions-in (fn [& _] ["9p9" "5p2"])]
+      (let [result (selection/resolve-selection
+                    {:provider :fireworks
+                     :family "accounts/fireworks/models/glm-*"
+                     :version :auto})]
+        (is (= "accounts/fireworks/models/glm-5p2" (:candidate result))
+            "an unregistered newer version never becomes the named candidate")
+        (is (nil? (:model result)))
+        (is (false? (:available? result)))
+        (is (= :needs-credential (get-in result [:availability :state])))))))
+
 (deftest a-family-with-no-known-version-still-reports-a-state
   ;; A stored Latest preference can outlive the registry entries behind it.
   ;; The resolver used to answer that with no availability at all, and every

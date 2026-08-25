@@ -196,6 +196,27 @@
                                 "Last-known status is retained"))
              (is (= "gpt-5.6-luna" (:resolves luna))))))))))
 
+(deftest an-outage-does-not-relabel-a-family-as-unsupported
+  (fake/with-server
+   (fn [fixture]
+     (let [unregistered "accounts/fireworks/models/glm-9p9"]
+       (fake/respond! fixture "/fireworks/models" fireworks-key
+                      [fireworks-model unregistered])
+       (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+         (fn []
+           (let [latest #(row (catalog/choices)
+                              "accounts/fireworks/models/glm-*")]
+             (is (= :available (:availability (latest))))
+             (is (= fireworks-model (:resolves (latest))))
+             (fake/outage! fixture "/fireworks/models" fireworks-key)
+             (selection/catalog true)
+             (is (= :temporarily-unreachable (:availability (latest))))
+             (is (= fireworks-model (:resolves (latest)))
+                 "the Latest row keeps naming the newest version simmis can run")
+             (is (= :not-implemented
+                    (:availability (row (catalog/choices) unregistered)))
+                 "a served but unregistered version stays unsupported"))))))))
+
 (deftest identical-endpoint-urls-retain-provider-provenance
   (fake/with-server
    (fn [{:keys [base-url] :as fixture}]
