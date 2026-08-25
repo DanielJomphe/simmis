@@ -140,8 +140,13 @@
     (room-ctx/drop-room! (rstore/slug->room-id slug))))
 
 (defn reset-agent-contexts!
-  "Drop participation for an agent everywhere (e.g. on prompt edit):
-   leave each live room, then clear caches."
+  "Drop participation for an explicitly edited agent everywhere.
+
+   `parties/update-agent!` calls this for model, prompt, and other direct agent
+   edits. Each live participant leaves and its cached context is cleared; the
+   next dispatch joins it again and resolves a fresh participant spec. Owner
+   preference and provider-catalog changes do not call this function, so they
+   do not alter a participant that is already joined."
   [agent-party-id]
   (let [room-uuids (map first (filter (fn [[_ aid]] (= aid agent-party-id)) @joined))]
     (doseq [rid room-uuids]
@@ -2074,8 +2079,8 @@
       {:value preference :source :owner-preference}
       {:value parties/default-model :source :product-default})))
 
-(defn- describe-selection
-  "Decorate one model-selection/describe result for person-facing surfaces."
+(defn- decorate-resolution
+  "Decorate one desired model resolution for person-facing surfaces."
   [selection provider-hint]
   (let [model (:model selection)
         candidate (:candidate selection)
@@ -2130,8 +2135,8 @@
               (or (model-catalog/choice-label info)
                   (:label info))}))))
 
-(defn describe-model
-  "What an agent resolves to from its stored override plus owner preference.
+(defn describe-model-resolution
+  "Desired model resolution from an agent override plus owner preference.
 
    `:configured?`/`:override?` mean model keys are stored on the agent.
    `:inherited?` means the agent stores none, whether the chain ends at its
@@ -2139,23 +2144,26 @@
    first-class picker row that clears an override; it carries the same
    availability result enforced by the server and turn path.
 
-   This describes configuration resolution, not whether a previously joined
-   runtime participant has already adopted a changed inherited value."
+   This is evaluated independently by configuration reads and participant
+   joins. It does not inspect active runtime state: a participant that already
+   joined may still hold an older concrete spec."
   [agent-party]
   (ensure-providers!)
-  (let [configured (model-selection/describe
+  (let [configured (model-selection/describe-resolution
                     {:model-family (:party/model-family agent-party)
                      :model-version (:party/model-version agent-party)
                      :model (:party/model agent-party)})
         override? (:configured? configured)
         {:keys [value source]} (inheritance-choice agent-party)
         inherited-selection (if (model-selection/family? value)
-                              (model-selection/describe {:model-family value
-                                                         :model-version :auto})
-                              (model-selection/describe {:model value}))
-        inherited-info (describe-selection inherited-selection nil)
+                              (model-selection/describe-resolution
+                               {:model-family value
+                                :model-version :auto})
+                              (model-selection/describe-resolution
+                               {:model value}))
+        inherited-info (decorate-resolution inherited-selection nil)
         chosen-info (if override?
-                      (describe-selection configured (:party/provider agent-party))
+                      (decorate-resolution configured (:party/provider agent-party))
                       inherited-info)
         inheritance-label
         (if (= source :owner-preference)
@@ -2183,6 +2191,13 @@
                               :agent-override "Explicit override"
                               :owner-preference "Inherited from owner preference"
                               :product-default "Inherited from product default")
+           :resolution-label "Resolves to"
+           :runtime-state :not-inspected
+           :runtime-label "Not inspected"
+           :runtime-explanation
+           (str "The model above is the desired configuration resolution. "
+                "An already joined participant may still use the concrete "
+                "model it captured when it joined.")
            :inheritance-choice inheritance-row)))
 
 ;; A `:run-turn-fn` wrapper used to mirror each turn's usage onto the owner's
@@ -2274,18 +2289,19 @@
             actor-kw (party->actor-kw agent-party)
             kb-conns (get-room-kb-conns room-uuid)
             budget-dollars (rooms/get-room-budget-dollars room-uuid)
-            ;; Resolved HERE, per participant creation — never frozen into the
-            ;; agent's stored config. An explicit override may record a family
-            ;; and version; an inheriting agent records no model selection. The
-            ;; concrete id is computed against the provider's availability
-            ;; catalog. This is why Vár ran glm-5p1 for eleven days after we
-            ;; "switched" to 5p2: the id had
-            ;; been baked in at creation, and no code change could reach it.
+            ;; Resolved HERE, once for this participant join. An explicit
+            ;; override may record a family and version; an inheriting agent
+            ;; records no model selection. The resulting concrete provider and
+            ;; model are captured in the llm-agent spec below and reused for
+            ;; subsequent turns until this participant leaves and rejoins.
             ;;
-            ;; ONE function, shared with the UI. The inspector and the room
-            ;; settings render exactly what this join uses, so a screen can no
-            ;; longer disagree with a turn.
-            {:keys [model provider] :as chosen} (describe-model agent-party)
+            ;; Configuration screens call the same resolver independently, so
+            ;; they show current desired resolution rather than introspecting
+            ;; this captured runtime spec. They can therefore differ after an
+            ;; owner-preference or catalog change until the participant later
+            ;; leaves and rejoins.
+            {:keys [model provider] :as chosen}
+            (describe-model-resolution agent-party)
             availability-check
             (when-not (:available? chosen)
               (throw (ex-info "Agent model is unavailable"

@@ -110,7 +110,8 @@
                                                 room-info (assoc :room-id (str (:room-id room-info))
                                                                  :room-name (:room-name room-info))
                                                 (= :agent (:party/type p))
-                                                (assoc :model-info (room-agents/describe-model p)
+                                                (assoc :model-resolution
+                                                       (room-agents/describe-model-resolution p)
                                                        :auto-respond? (boolean (:party/auto-respond? p))))))))
                                   (sort-by (juxt #(case (:type %) :human 0 :agent 1 2)
                                                  :display-name))
@@ -516,12 +517,14 @@
                         (assoc :room/budget-dollars (rooms/get-room-budget-dollars room-uuid))
                         (dissoc :room/parties)))
             :humans humans
-            ;; Every agent carries what it will ACTUALLY run, resolved by the
-            ;; same function the join uses. The raw attributes cannot be read
-            ;; by a person: a family-following agent has no :party/model, so
-            ;; the screens printed "—" and "default" for a model that resolves
-            ;; fine.
-            :agents (mapv (fn [a] (assoc a :model-info (room-agents/describe-model a))) agents)
+            ;; Every agent carries current desired configuration resolution.
+            ;; A join invokes the same resolver and captures its result, but
+            ;; this display payload does not inspect an already joined
+            ;; participant and must not be read as active-runtime state.
+            :agents (mapv (fn [a]
+                            (assoc a :model-resolution
+                                   (room-agents/describe-model-resolution a)))
+                          agents)
             :model-choices (model-catalog/choices)
             :all-humans all-humans
             :knowledge-bases (mapv (fn [kb]
@@ -786,7 +789,8 @@
            (some? system-prompt) (assoc :party/system-prompt system-prompt)
            model-patch (merge model-patch)))
        {:status :ok
-        :model-info (room-agents/describe-model (parties/get-party agent-uuid))})))
+        :model-resolution
+        (room-agents/describe-model-resolution (parties/get-party agent-uuid))})))
 
 (defn-spin-remote update-agent-config!
   [server-id agent-id-str agent-name model-choice system-prompt]

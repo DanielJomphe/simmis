@@ -20,13 +20,13 @@
    - :agent-id   string UUID
    - :room-id    string UUID of the room this agent belongs to
    - :agent-name string
-   - :model-info map from room-agents/describe-model
+   - :model-resolution desired configuration resolution from the server
 
    admin-data: result of load-room-details!
    room-states: current room-states signal value (map of scope-str → {:db db})"
   [data admin-data room-states]
-  (let [{:keys [agent-id room-id agent-name model-info]} data
-        model (or (:model model-info) (:candidate model-info))
+  (let [{:keys [agent-id room-id agent-name model-resolution]} data
+        model (or (:model model-resolution) (:candidate model-resolution))
         label (cond
                 (str/includes? (or model "") "claude") "Claude"
                 (str/includes? (or model "") "gpt")    "GPT"
@@ -92,21 +92,22 @@
                                 first)
               ;; Freshest first: the room details reload after every save, while
               ;; the tab's own copy is whatever the nav had when it was opened.
-              chosen (or (:model-info agent-config) model-info)
+              chosen (or (:model-resolution agent-config) model-resolution)
               room-kbs (:knowledge-bases admin-data)]
 
           (el/div {:class "agent-inspector-body"}
 
-            ;; Configuration section. Everything here comes from :model-info,
-            ;; which the server computes with the SAME function the turn uses
-            ;; (room-agents/describe-model). Reading :party/model directly is
-            ;; what used to print "—" for an agent following a family, next to
-            ;; a provider it never chose.
+            ;; Configuration section. Everything here comes from the server's
+            ;; desired model resolution. Participant join uses the same
+            ;; resolver, but a live participant captures that result; this
+            ;; display does not introspect the captured runtime spec.
             (let [{:keys [model candidate preferred? resolved-label choice-label
                           provider-label no-reasoning? reasoning-copy
                           reasoning-explanation selection-label available?
                           availability-label availability-explanation
-                          resolution-status resolution-status-explanation]} chosen
+                          resolution-label resolution-status
+                          resolution-status-explanation runtime-label
+                          runtime-explanation]} chosen
                   display-model (or model candidate)]
               (el/div {:class "agent-inspector-section"}
                 (el/h3 {:class "agent-inspector-section-title"} "Configuration")
@@ -126,11 +127,17 @@
                   ;; Use the same friendly explicit-version label as the picker;
                   ;; the provider id stays one hover away for diagnosis.
                   (el/div {:class "agent-inspector-row"}
-                    (el/span {:class "agent-inspector-label"} "Resolves to")
+                    (el/span {:class "agent-inspector-label"}
+                      (or resolution-label "Resolves to"))
                     (el/span {:class (vc/class-names "agent-inspector-value"
                                                      (when model "has-tooltip"))
                               :data-tooltip (or model "")}
                       (or resolved-label "—")))
+                  (el/div {:class "agent-inspector-row"}
+                    (el/span {:class "agent-inspector-label"} "Active runtime")
+                    (el/span {:class "agent-inspector-value has-tooltip"
+                              :data-tooltip (or runtime-explanation "")}
+                      (or runtime-label "Not inspected")))
                   (when resolution-status
                     (el/div {:class "agent-inspector-row"}
                       (el/span {:class "agent-inspector-label"} "Status")

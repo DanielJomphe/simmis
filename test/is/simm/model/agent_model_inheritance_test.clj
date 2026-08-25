@@ -119,7 +119,7 @@
                   (fn [value]
                     (swap! validated conj value)
                     {:value value :available? true})
-                  room-agents/describe-model identity]
+                  room-agents/describe-model-resolution identity]
       (testing "an exact override stores only the exact model form"
         (chat-remote/update-agent-config-server agent-id "" "gpt-5.5" nil)
         (is (= "gpt-5.5" (:model (stored-config (:party/id agent)))))
@@ -151,7 +151,7 @@
                   (fn [value]
                     (swap! validated conj value)
                     {:value value :available? true})
-                  room-agents/describe-model identity]
+                  room-agents/describe-model-resolution identity]
       (chat-remote/update-agent-config-server
        (str (:party/id agent)) "" catalog/inherit-choice-value nil))
     (is (= [parties/default-model] @validated))
@@ -187,8 +187,8 @@
           inherited (parties/create-agent! owner-id {:display-name "Inherited"})
           explicit (parties/create-agent!
                     owner-id {:display-name "Explicit" :model "gpt-5.5"})
-          inherited-info (room-agents/describe-model inherited)
-          explicit-info (room-agents/describe-model explicit)
+          inherited-info (room-agents/describe-model-resolution inherited)
+          explicit-info (room-agents/describe-model-resolution explicit)
           inherit-row (:inheritance-choice inherited-info)]
       (testing "inheritance is a selected state, not an implicit explicit model"
         (is (false? (:configured? inherited-info)))
@@ -204,14 +204,22 @@
         (is (:configured? explicit-info))
         (is (false? (:inherited? explicit-info)))
         (is (= :agent-override (:selection-source explicit-info)))
-        (is (= "Explicit override" (:selection-label explicit-info)))))))
+        (is (= "Explicit override" (:selection-label explicit-info))))
+      (testing "display data describes desired resolution, not active state"
+        (is (= "Resolves to" (:resolution-label inherited-info)))
+        (is (= :not-inspected (:runtime-state inherited-info)))
+        (is (= "Not inspected" (:runtime-label inherited-info)))
+        (is (re-find #"already joined participant"
+                     (:runtime-explanation inherited-info)))
+        (is (not (contains? inherited-info :active-model)))
+        (is (not (contains? inherited-info :running-model)))))))
 
 (deftest owner-without-preference-is-labelled-as-product-default-inheritance
   (binding [selection/*env-lookup* {}]
     (selection/reset-catalog!)
     (let [owner-id (seed-owner!)
           agent (parties/create-agent! owner-id {:display-name "Inherited"})
-          info (room-agents/describe-model agent)]
+          info (room-agents/describe-model-resolution agent)]
       (is (false? (:configured? info)))
       (is (:inherited? info))
       (is (= :product-default (:selection-source info)))

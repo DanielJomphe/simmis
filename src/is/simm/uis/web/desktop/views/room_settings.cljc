@@ -119,16 +119,19 @@
                     (el/div {:class "settings-env-row"}
                       (el/span {:class "settings-env-key"}
                         (or (:party/display-name agent) "Agent"))
-                      ;; The picker's own label for this agent's choice, the
-                      ;; same string the agent inspector prints. Display only:
-                      ;; the picker itself lives one click away, on the agent's
-                      ;; name.
+                      ;; Desired configuration only. The participant resolves
+                      ;; again when it joins; active runtime state is not
+                      ;; introspected here and may still hold an earlier spec.
                       (el/span {:class "settings-env-value settings-agent-model"
-                                :data-tooltip (str "Resolves to "
-                                                   (or (:model-short (:model-info agent)) "?")
-                                                   " via "
-                                                   (or (:provider-label (:model-info agent)) "?"))}
-                        (or (:choice-label (:model-info agent)) "default"))
+                                :data-tooltip
+                                (or (:runtime-explanation
+                                     (:model-resolution agent)) "")}
+                        (el/span {:class "settings-agent-model-choice"}
+                          (or (:choice-label (:model-resolution agent)) "default"))
+                        (el/span {:class "settings-agent-model-resolution"}
+                          (str "Resolves to "
+                               (or (:model-short (:model-resolution agent)) "—")
+                               " when next joined")))
                       (el/button {:class "settings-env-delete"
                                   :title "Remove participant"
                                   :on-click (fn [_]

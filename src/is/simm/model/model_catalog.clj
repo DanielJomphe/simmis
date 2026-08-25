@@ -47,8 +47,8 @@
 
 (def provider-labels
   "How a provider is written for a person. One map, used by the picker rows and
-   by `room-agents/describe-model`, so a screen cannot show `openai` in one
-   place and `OPENAI` in another."
+   by `room-agents/describe-model-resolution`, so desired-resolution surfaces
+   use one vocabulary. This does not introspect a joined participant."
   {:openai "OpenAI"
    :fireworks "Fireworks"
    :anthropic "Anthropic"
@@ -277,7 +277,7 @@
    own row was withdrawn when a newer same-family/provider fallback is usable.
    It is used when an agent returns to owner inheritance: the preference was
    previously persisted, and validation must follow the same soft-resolution
-   policy as runtime execution without rewriting that preference."
+   policy used by participant join without rewriting that preference."
   [value]
   (let [resolved (if (ms/family? value)
                    (ms/resolve-selection {:family value :version :auto})
@@ -296,8 +296,8 @@
                        :credential-source (:credential-source availability)})))))
 
 (defn selected?
-  "Is `row` the one this config uses? `model-info` comes from
-   `room-agents/describe-model`."
+  "Is `row` the configured choice? `model-resolution` comes from
+   `room-agents/describe-model-resolution` and is not active-state data."
   [row {:keys [family auto? model candidate preferred-model]}]
   (if (and family auto?)
     (= (:value row) family)
@@ -307,8 +307,8 @@
   "The picker's own label for what this config selected, so the configuration
    panel names a model exactly the way the list that set it does. nil when the
    config points at something the picker does not offer."
-  [model-info]
+  [model-resolution]
   (->> (choices)
-       (filter #(selected? % model-info))
+       (filter #(selected? % model-resolution))
        first
        :label))

@@ -39,7 +39,7 @@
     (with-redefs [catalog/choice (constantly unavailable)
                   parties/update-agent! (fn [& args] (swap! writes conj args))
                   parties/get-party (constantly {})
-                  room-agents/describe-model (constantly {})]
+                  room-agents/describe-model-resolution (constantly {})]
       (testing "model, name, and prompt are rejected atomically"
         (let [data (rejection
                     #(chat-remote/update-agent-config-server
@@ -55,7 +55,7 @@
                   room-agents/inheritance-choice
                   (constantly {:value "gpt-5.5-luna"
                                :source :owner-preference})
-                  room-agents/describe-model (constantly {})
+                  room-agents/describe-model-resolution (constantly {})
                   selection/resolve-selection
                   (constantly {:preferred-model "gpt-5.5-luna"
                                :model "gpt-5.6-luna"

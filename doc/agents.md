@@ -148,16 +148,34 @@ agent turn; dvergr's registry is the metadata source from process start.
 The PROVIDER is derived from the model, never stored beside it. A stored
 provider is a second thing to keep in sync, and it used to win: every agent
 created in the UI was stamped `:fireworks` at creation, so preferring an
-OpenAI model still posted the request to Fireworks. `room-agents/describe-model`
-resolves model, provider and version together, and both the agent inspector and
-the room settings render exactly what it returns, so no screen can disagree with
-a turn.
+OpenAI model still posted the request to Fireworks.
 
-The inspector says what a selection **resolves to**; it does not call that value
-the currently running model. In particular, changing an owner's preference
-changes inherited configuration immediately, while a participant that was
-already joined is rebuilt from it on a later rejoin. The configuration surface
-does not claim that rebuild has already happened.
+Four model facts have distinct lifecycles:
+
+1. **Configured preference** is the stored owner preference or explicit agent
+   override. It preserves a family/Latest choice or a preferred version.
+2. **Desired resolution** is what `room-agents/describe-model-resolution`
+   computes from current configuration and catalog/registry facts. The agent
+   inspector and room settings display this as “Resolves to” or “when next
+   joined.”
+3. **Availability** is the resolver's current credential, catalog, registry,
+   and adapter result. It governs new saves and whether a new join may capture
+   the desired model.
+4. **Active runtime state** is the concrete provider/model spec captured by a
+   participant when it joined. The current UI does not introspect that spec.
+
+Participant construction calls the desired resolver once, validates the result,
+puts the concrete provider/model into dvergr's participant spec, and reuses that
+captured spec for subsequent turns. Owner-preference changes and catalog
+refreshes can therefore change the displayed desired resolution and availability
+without changing an already joined participant. The two may legitimately differ
+until that participant leaves and rejoins.
+
+Explicit agent edits are a separate path. Updating an agent's own model, prompt,
+or other mutable configuration makes its live participants leave and clears
+their cached contexts. The next dispatch rejoins the agent and resolves a fresh
+spec. This reset does not imply per-turn resolution, and owner-preference or
+catalog changes do not currently trigger it.
 
 One native-provider quirk is load-bearing here: on OpenAI's configured
 `/v1/chat/completions` path, the GPT-5.6 entries require `reasoning_effort`

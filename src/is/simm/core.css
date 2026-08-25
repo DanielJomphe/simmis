@@ -7456,6 +7456,17 @@ body.tab-dragging .column-drop-zone {
   cursor: help;
 }
 
+.settings-agent-model-choice,
+.settings-agent-model-resolution {
+  display: block;
+}
+
+.settings-agent-model-resolution {
+  margin-top: 2px;
+  color: var(--mono-text-tertiary);
+  font-size: var(--text-xs);
+}
+
 .settings-agent-model[data-tooltip]:hover::after {
   content: attr(data-tooltip);
   position: absolute;

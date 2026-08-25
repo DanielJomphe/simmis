@@ -130,6 +130,15 @@ run. New agents inherit their owner's validated preference (then the product
 default) without storing a model; the per-agent picker identifies inherited
 state, and clearing an explicit override returns to that inheritance chain.
 
+Resolution and activation are separate. A participant resolves the current
+configuration when it joins or rejoins, captures the resulting provider/model
+spec, and reuses that spec for subsequent turns. Owner-preference and catalog
+changes update configured preference, desired resolution, and availability;
+they do not rewrite an already joined participant. An explicit agent edit
+resets that agent's joined participants, so the next dispatch rejoins and
+resolves again. The configuration UI says “Resolves to” or “when next joined”
+and reports active runtime state as uninspected.
+
 ### Production build
 
 ```bash

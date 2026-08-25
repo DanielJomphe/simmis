@@ -110,8 +110,8 @@
         (:actor/created-at ent)    (assoc :party/created (:actor/created-at ent))
         (:actor/system-prompt ent) (assoc :party/system-prompt (:actor/system-prompt ent))
         (contains? config :model)         (assoc :party/model (:model config))
-        ;; Family + version, resolved to a concrete id per TURN (see
-        ;; is.simm.model.model-selection). An explicit :model is the legacy
+        ;; Family + version, resolved to a concrete id when a participant joins
+        ;; (see is.simm.model.model-selection). An explicit :model is the legacy
         ;; form — kept working, but it is the thing that froze Vár on glm-5p1.
         (contains? config :model-family)  (assoc :party/model-family (:model-family config))
         (contains? config :model-version) (assoc :party/model-version (:model-version config))
@@ -312,10 +312,16 @@
       (get-party party-id))))
 
 (defn update-agent!
-  "Update mutable fields of an agent party. Invalidates cached runtime context."
+  "Update mutable fields of an agent party and reset its joined participants.
+
+   This explicit agent-edit path is separate from ordinary turns. The next
+   dispatch rejoins the participant and re-resolves its model configuration.
+   Owner preference and catalog changes use different write paths and do not
+   reset an already joined participant."
   [agent-id updates]
   (update-party! agent-id updates)
-  ;; Reset cached context so new system prompt/model takes effect.
+  ;; Leave current participants and clear their cached contexts. The next join
+  ;; captures the edited prompt/model resolution; there is no per-turn switch.
   (require 'is.simm.agents.room-agents)
   (when-let [reset-fn (resolve 'is.simm.agents.room-agents/reset-agent-contexts!)]
     (reset-fn agent-id)))

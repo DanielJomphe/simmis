@@ -647,20 +647,23 @@
 
    One attribute holds both because a person's model preference should not
    freeze the way an agent's config used to. Picking \"latest\" stores the
-   family and re-resolves on every turn."
+   family. Configuration reads can resolve that family again as availability
+   changes; a live participant captures one such result when it joins and keeps
+   that concrete spec until it leaves and rejoins."
   [s]
   (when (seq (str s))
     (if (family? s)
       (resolve-model {:family s :version :auto})
       (resolve-model {:model s}))))
 
-(defn describe
-  "What an agent's stored config actually means, for display and for a picker's
-   current value.
+(defn describe-resolution
+  "Desired resolution of an agent's stored config, for display and join-time
+   participant construction.
 
-   {:family :version :auto? :model :configured?}. `:model` is the id the next
-   turn will use, `:configured?` is false when the agent chose nothing and
-   inherits its owner's preference."
+   `:model` is the concrete id this configuration currently resolves to;
+   `:configured?` is false when the agent chose nothing and inherits its owner's
+   preference. This function does not inspect an already joined participant or
+   claim which model that participant has captured."
   [{:keys [model-family model-version model]}]
   (let [auto? (auto-version? model-version)
         resolved (resolve-selection {:family model-family
