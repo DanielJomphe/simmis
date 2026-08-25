@@ -15,16 +15,11 @@
  (fn [f]
    (let [before @registry/registry]
      (selection/reset-catalog!)
-     (registry/register-model!
-      {:id fireworks-model
-       :name "GLM 5.2"
-       :provider :fireworks
-       :api-type :openai-chat
-       :capabilities #{:tools :streaming :system-prompt}
-       :context 131072
-       :max-output 8192
-       :pricing {:input 1 :output 1}
-       :quirks {}})
+     ;; The picker loads dvergr's resource-backed models itself, so load them
+     ;; here rather than registering a stand-in Fireworks entry: a stub would be
+     ;; overwritten mid-test by that load, and a test could no longer assert
+     ;; that a /models RESPONSE registers nothing.
+     (registry/load-models-resource!)
      (try
        (f)
        (finally
@@ -117,6 +112,34 @@
                            provider-rows))))
            (is (empty? @(:requests fixture))
                "rendering missing-credential rows makes no provider calls")))))))
+
+(deftest fireworks-rows-do-not-wait-for-the-first-agent-turn
+  ;; Fireworks model metadata lives in dvergr's resources/models.edn, which
+  ;; only provider initialization reads. The picker is reachable before any
+  ;; agent has run — opening Settings on a fresh boot — and every Fireworks
+  ;; family, the product default included, then read "Not yet supported" and
+  ;; could not be saved.
+  (let [loaded @registry/registry]
+    (try
+      (reset! registry/registry
+              (into {} (remove #(= :fireworks (:provider (val %)))) loaded))
+      (is (nil? (registry/get-model fireworks-model))
+          "precondition: no Fireworks metadata is loaded yet")
+      (fake/with-server
+       (fn [fixture]
+         (fake/respond! fixture "/fireworks/models" fireworks-key
+                        [fireworks-model])
+         (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+           (fn []
+             (let [rows (catalog/choices)
+                   latest (row rows "accounts/fireworks/models/glm-*")]
+               (is (= :available (:availability latest)))
+               (is (= fireworks-model (:resolves latest)))
+               (is (= fireworks-model
+                      (:resolves (catalog/require-available-choice!
+                                  "accounts/fireworks/models/glm-*")))
+                   "and the save path accepts it"))))))
+      (finally (reset! registry/registry loaded)))))
 
 (deftest served-registry-and-account-states-share-one-picker-model
   (fake/with-server

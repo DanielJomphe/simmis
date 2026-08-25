@@ -163,6 +163,25 @@
   {:reasoning-copy (if no-reasoning? reasoning-off-copy reasoning-on-copy)
    :reasoning-explanation (when no-reasoning? reasoning-off-explanation)})
 
+(defn- ensure-model-metadata!
+  "Load dvergr's resource-backed model definitions before deciding availability.
+
+   dvergr's built-in registry map carries the Anthropic and OpenAI entries, but
+   the Fireworks ones live in `resources/models.edn` and are read only by
+   `load-models-resource!` — which simmis reaches through provider
+   initialization, on the first agent turn. Availability is registry-gated, so
+   a picker built before that turn saw no Fireworks model at all and reported
+   every Fireworks family, the product default included, as \"Not yet
+   supported\". Opening Settings on a fresh boot was enough.
+
+   Idempotent, and no network: it re-reads one classpath resource and
+   overwrites the same entries. Deliberately not `providers/ensure-initialized!`
+   — whether a provider record exists is a different question from whether the
+   metadata is loaded, and that check short-circuits once any provider (a local
+   Claude CLI, say) has registered."
+  []
+  (registry/load-models-resource!))
+
 (def ^:private max-versions
   "How many preferred versions to offer under a family.
 
@@ -253,6 +272,7 @@
   "Every row a model picker should show, in order. Each row carries its own
    copy, so the client never composes a sentence of its own."
   []
+  (ensure-model-metadata!)
   (mapv identity
         (mapcat (fn [{:keys [family model label provider] :as entry}]
                   (if family
@@ -295,6 +315,7 @@
    previously persisted, and validation must follow the same soft-resolution
    policy used by participant join without rewriting that preference."
   [value]
+  (ensure-model-metadata!)
   (let [resolved (if (ms/family? value)
                    (ms/resolve-selection {:family value :version :auto})
                    (ms/resolve-selection {:model value}))
