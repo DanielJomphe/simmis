@@ -157,6 +157,20 @@
           (or (not= :openai provider)
               (:native-openai? endpoint))))))
 
+(defn next-join-copy
+  "What a configuration surface says about the NEXT join.
+
+   Room settings composed this sentence itself and always promised a
+   resolution, so an agent whose model needs a credential still read
+   \"Resolves to glm-5p2 when next joined\" — and that join then refused with
+   `:model-unavailable`. A surface must not promise a resolution the join
+   boundary will reject. Copy lives here, beside every other row's copy."
+  [{:keys [available? model-short availability-label]}]
+  (if available?
+    (str "Resolves to " (or model-short "—") " when next joined")
+    (str (or availability-label "Unavailable")
+         " — will not join until this resolves")))
+
 (defn reasoning-copy
   "The words a screen shows for this model's reasoning, plus the tooltip."
   [no-reasoning?]

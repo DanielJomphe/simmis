@@ -81,6 +81,16 @@
             "OpenAI could not confirm this model for this account."}
            (catalog/availability-copy "openai" nil)))))
 
+(deftest next-join-copy-never-promises-an-unavailable-resolution
+  (is (= "Resolves to glm-5p2 when next joined"
+         (catalog/next-join-copy {:available? true :model-short "glm-5p2"})))
+  (is (= "Credential required — will not join until this resolves"
+         (catalog/next-join-copy {:available? false
+                                  :model-short "glm-5p2"
+                                  :availability-label "Credential required"})))
+  (is (= "Unavailable — will not join until this resolves"
+         (catalog/next-join-copy {:available? false}))))
+
 (deftest an-unresolved-selection-has-no-label
   (is (nil? (catalog/model-label nil))
       "a nil id must not match the first curated family entry")

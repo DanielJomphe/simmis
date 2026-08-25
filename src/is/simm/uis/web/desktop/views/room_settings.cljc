@@ -128,10 +128,12 @@
                                      (:model-resolution agent)) "")}
                         (el/span {:class "settings-agent-model-choice"}
                           (or (:choice-label (:model-resolution agent)) "default"))
+                        ;; Printed verbatim from the server. Composing it here
+                        ;; promised a resolution even when the model was
+                        ;; unavailable and the join would refuse it.
                         (el/span {:class "settings-agent-model-resolution"}
-                          (str "Resolves to "
-                               (or (:model-short (:model-resolution agent)) "—")
-                               " when next joined")))
+                          (or (:next-join-copy (:model-resolution agent))
+                              "Not resolved")))
                       (el/button {:class "settings-env-delete"
                                   :title "Remove participant"
                                   :on-click (fn [_]

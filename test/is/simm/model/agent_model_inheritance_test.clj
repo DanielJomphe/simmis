@@ -232,6 +232,20 @@
         (is (= "Credential required" (:availability-label info)))
         (is (= "GPT Luna (Latest)" (:choice-label info)))))))
 
+(deftest room-settings-copy-follows-availability
+  ;; Room settings prints `:next-join-copy` verbatim. With no credential the
+  ;; join refuses with :model-unavailable, so the sentence must not promise a
+  ;; resolution.
+  (binding [selection/*env-lookup* {}]
+    (selection/reset-catalog!)
+    (let [owner-id (seed-owner! "gpt-*-luna")
+          agent (parties/create-agent! owner-id {:display-name "Inherited"})
+          info (room-agents/describe-model-resolution agent)]
+      (is (false? (:available? info)))
+      (is (= "Credential required — will not join until this resolves"
+             (:next-join-copy info)))
+      (is (not (re-find #"Resolves to" (:next-join-copy info)))))))
+
 (deftest owner-without-preference-is-labelled-as-product-default-inheritance
   (binding [selection/*env-lookup* {}]
     (selection/reset-catalog!)

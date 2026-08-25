@@ -2128,12 +2128,16 @@
       ;; The label the PICKER uses for this same choice. The configuration panel
       ;; prints it verbatim, so the two cannot drift into separate vocabularies
       ;; ("family latest" against "(Latest)") the way they did.
-      (merge info
-             (model-catalog/reasoning-copy (:no-reasoning? info))
-             (model-catalog/availability-copy provider availability)
-             {:choice-label
-              (or (model-catalog/choice-label info)
-                  (:label info))}))))
+      (let [info (merge info
+                        (model-catalog/reasoning-copy (:no-reasoning? info))
+                        (model-catalog/availability-copy provider availability))]
+        (assoc info
+               :choice-label (or (model-catalog/choice-label info)
+                                 (:label info))
+               ;; What room settings prints about the next join. Server-side,
+               ;; like every other sentence here, and it does not promise a
+               ;; resolution the join boundary will refuse.
+               :next-join-copy (model-catalog/next-join-copy info))))))
 
 (defn describe-model-resolution
   "Desired model resolution from an agent override plus owner preference.
