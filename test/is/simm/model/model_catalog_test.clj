@@ -127,7 +127,7 @@
   ;; Fireworks model metadata lives in dvergr's resources/models.edn, which
   ;; only provider initialization reads. The picker is reachable before any
   ;; agent has run — opening Settings on a fresh boot — and every Fireworks
-  ;; family, the product default included, then read "Not yet supported" and
+  ;; family, the product default included, then read "Not supported" and
   ;; could not be saved.
   (let [loaded @registry/registry]
     (try
@@ -171,8 +171,9 @@
            (testing "served + unregistered is explicit and never registered"
              (is (= :not-implemented (:availability unregistered)))
              (is (= :registry-missing (:availability-reason unregistered)))
-             (is (= "Not yet supported" (:availability-label unregistered)))
-             (is (= "Not yet supported."
+             (is (= "Not supported" (:availability-label unregistered)))
+             (is (= (str "simmis has no metadata or adapter for this model, "
+                         "so it cannot run here.")
                     (:availability-explanation unregistered)))
              (is (nil? (registry/get-model "gpt-9.9-luna")))
              (is (= before @registry/registry)

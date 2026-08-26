@@ -217,8 +217,13 @@
      (str "Set " credential-source " in the server environment, then restart simmis.")}
 
     :not-implemented
-    {:availability-label "Not yet supported"
-     :availability-explanation "Not yet supported."}
+    ;; NOT "not yet". This state is reached from both directions: a version the
+    ;; provider has just released and dvergr has no entry for, and an older
+    ;; variant dvergr never carried. "Not yet" reads as a promise about the
+    ;; first and is simply wrong about the second.
+    {:availability-label "Not supported"
+     :availability-explanation
+     "simmis has no metadata or adapter for this model, so it cannot run here."}
 
     :unavailable-to-account
     {:availability-label "Unavailable to account"

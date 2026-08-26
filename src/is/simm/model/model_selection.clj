@@ -505,7 +505,7 @@
    shows a Latest row and the resolver reports why that row is unusable. Naming
    the newest KNOWN version instead picked up ids a provider serves but dvergr
    does not implement, so a Fireworks outage relabelled the Kimi family
-   \"Not yet supported\" and pointed the row at kimi-k3 — a model simmis would
+   \"Not supported\" and pointed the row at kimi-k3 — a model simmis would
    never run — while the k2p6 row beside it correctly read
    \"Temporarily unreachable\".
 

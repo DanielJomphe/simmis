@@ -138,7 +138,7 @@ the default, a different family, or another provider.
 
 A model must also exist in dvergr's registry, which is where its context window,
 capabilities and price per token come from. `/models` never adds to that
-registry: a served but unregistered id is shown as “Not yet supported,” while a
+registry: a served but unregistered id is shown as “Not supported,” while a
 registered id absent from a successful provider response is unavailable to that
 account. `:auto` selects the newest usable version inside its exact family;
 preferred-version fallback uses the same candidate set but accepts only

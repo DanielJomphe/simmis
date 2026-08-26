@@ -123,7 +123,7 @@ models); add `OPENAI_BASE_URL` to point that key at any other OpenAI-compatible
 endpoint, including a local one. Fireworks always uses its own base and
 `FIREWORKS_API_KEY`; credentials are never shared between providers. Each
 agent's model can also be set per room in its settings. The picker keeps every
-curated family visible and marks rows as available, credential-required, not yet
+curated family visible and marks rows as available, credential-required, not
 supported, unavailable to the account, or temporarily unreachable; only
 available rows can be newly saved, and only an available resolved target can
 run. New agents inherit their owner's validated preference (then the product

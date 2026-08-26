@@ -244,7 +244,7 @@
   ;; Under an outage or a missing credential nothing in the family is usable,
   ;; but the Latest row still has to name something. Naming the newest KNOWN
   ;; version picked up ids the provider serves and dvergr does not implement,
-  ;; which reported a reachability problem as "Not yet supported".
+  ;; which reported a reachability problem as "Not supported".
   (binding [selection/*env-lookup* {}]
     (with-redefs [selection/known-versions-in (fn [& _] ["9p9" "5p2"])]
       (let [result (selection/resolve-selection
