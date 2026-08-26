@@ -181,30 +181,29 @@
             (el/div {:class "agent-inspector-section"}
               (el/h3 {:class "agent-inspector-section-title"} "Model")
               (el/div {:class "settings-model-list"}
-                ;; :value is the key, `:selected?` rides in the item. See the
-                ;; same list in settings.cljc for why the tick must not be part
-                ;; of the key.
-                (let [override? (:configured? chosen)
-                      rows (into [(assoc (:inheritance-choice chosen)
-                                         :selected? (not override?))]
-                                 (map (fn [c]
-                                        (assoc c :selected?
-                                               (and override?
-                                                    (if (and (:family chosen)
-                                                             (:auto? chosen))
-                                                      (= (:value c) (:family chosen))
-                                                      (= (:value c)
-                                                         (or (:preferred-model chosen)
-                                                             (:candidate chosen)
-                                                             (:model chosen))))))))
-                                 (:model-choices admin-data))]
+                ;; :value is the key; the AGENT and `:selected?` ride in the
+                ;; item. Identity has one source here — the row — because a
+                ;; row that is unselected for two agents is otherwise the same
+                ;; item, and ifor-each hands the reused node's stale handler
+                ;; the wrong agent. See settings.cljc for why the tick must
+                ;; not be part of the key.
+                (let [rows (model-picker/agent-model-rows
+                            agent-id agent-name chosen
+                            (:model-choices admin-data))]
                   (ifor-each :value rows
                     (fn [row]
                       (model-picker/render-option
                        row
-                       (fn [value]
+                       ;; The TARGET comes out of the row, never out of this
+                       ;; closure: a memoized node keeps the handler it was
+                       ;; built with, and that handler used to name whichever
+                       ;; agent was on screen when the node was created.
+                       (fn [{:keys [value] :as selected-row}]
                          (let [s (chat-remote/update-agent-config!
-                                  web/server-id agent-id agent-name value nil)]
+                                  web/server-id
+                                  (:agent-id selected-row)
+                                  (:agent-name selected-row)
+                                  value nil)]
                            (s (fn [_] (reset! sig/admin-data nil))
                               (fn [err]
                                 (js/console.error

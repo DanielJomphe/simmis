@@ -230,7 +230,7 @@
               (fn [row]
                 (model-picker/render-option
                  row
-                 (fn [value]
+                 (fn [{:keys [value]}]
                    #?(:cljs
                       (when-let [user @sig/current-user]
                         (let [s (sr/save-preferred-model!

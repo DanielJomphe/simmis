@@ -35,6 +35,39 @@
      :aria-describedby (when (and disabled? availability-explanation)
                          (explanation-id value))}))
 
+(defn agent-model-rows
+  "Picker rows for ONE agent, built from that agent's model resolution.
+
+   The agent rides IN every row. `ifor-each` memoizes on item equality and
+   cannot see a closure variable, so rows that carried only the model value
+   were equal across two agents: the node — and the click handler closed over
+   the previously viewed agent — got reused, and the write landed on the wrong
+   agent. Keeping `:agent-id` in the item makes two agents' rows genuinely
+   different items, and the handler reads the target back out of the row it is
+   given instead of closing over it.
+
+   The first row is the inheritance choice; the rest are the catalog choices.
+   `:selected?` stays in the item too, for the same reason (see settings.cljc)."
+  [agent-id agent-name resolution choices]
+  (let [override? (:configured? resolution)
+        auto-family? (and (:family resolution) (:auto? resolution))
+        chosen-value (or (:preferred-model resolution)
+                         (:candidate resolution)
+                         (:model resolution))
+        stamp (fn [row selected?]
+                (assoc row
+                       :agent-id agent-id
+                       :agent-name agent-name
+                       :selected? selected?))]
+    (into [(stamp (:inheritance-choice resolution) (not override?))]
+          (map (fn [c]
+                 (stamp c (boolean
+                           (and override?
+                                (if auto-family?
+                                  (= (:value c) (:family resolution))
+                                  (= (:value c) chosen-value)))))))
+          choices)))
+
 (defn- event-key [event]
   #?(:cljs (.-key event)
      :clj (:key event)))
@@ -44,18 +77,22 @@
      :clj nil))
 
 (defn option-attrs
-  "Semantic row attrs plus guarded pointer/keyboard activation."
+  "Semantic row attrs plus guarded pointer/keyboard activation.
+
+   `on-select` receives the whole ROW, not just its value. The row is the only
+   thing a memoized node carries, so the target it names (see
+   `agent-model-rows`) is the one identity a handler can trust."
   [row on-select]
   (merge
    (semantic-attrs row)
    {:on-click (fn [_]
                 (when (activation-allowed? row)
-                  (on-select (:value row))))
+                  (on-select row)))
     :on-key-down (fn [event]
                    (when (activation-key? (event-key event))
                      (prevent-default! event)
                      (when (activation-allowed? row)
-                       (on-select (:value row)))))}))
+                       (on-select row))))}))
 
 #?(:cljs
    (defn render-option
