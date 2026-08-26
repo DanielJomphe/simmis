@@ -16,7 +16,7 @@ orbs:
 jobs:
   test:
     docker:
-      - image: cimg/clojure:1.12-node
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
     steps:
       - checkout
@@ -29,10 +29,10 @@ jobs:
           command: clojure -X:test
           no_output_timeout: 15m
       - run:
-          name: Compile CLJS release (build gate)
+          name: Build browser release (CLJS + CSS gate)
           command: |
             npm ci
-            npx shadow-cljs release app
+            npm run release
           no_output_timeout: 20m
       - save_cache:
           key: deps-v1-{{ checksum "deps.edn" }}
@@ -43,7 +43,7 @@ jobs:
 
   uberjar:
     docker:
-      - image: cimg/clojure:1.12-node
+      - image: cimg/clojure:1.12.1-openjdk-21.0-node
     resource_class: large
     steps:
       - checkout
