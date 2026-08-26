@@ -171,6 +171,19 @@ refreshes can therefore change the displayed desired resolution and availability
 without changing an already joined participant. The two may legitimately differ
 until that participant leaves and rejoins.
 
+Join is where availability is enforced, and it fails closed: an unavailable
+resolution throws `:model-unavailable` rather than running the agent on some
+other model. That failure is isolated to the one participant. `post-user-message!`
+joins each recipient separately, drops the ones that throw, and still posts the
+user's message and still joins the rest. One misconfigured agent therefore
+cannot lose a message or silence the room. Each dropped agent is reported twice:
+a Telemere `:warn` (`::agent-join-failed`, with the agent, model and availability
+state) for the operator, and a note in the room itself — authored by the agent
+that cannot run, addressed back to the sender so no participant is woken by it —
+naming the agent and the reason, in the same words the settings screens use. If
+every recipient fails, the message is still posted; the send does not fail, and
+the client shows no send error, because the message WAS sent.
+
 Explicit agent edits are a separate path. Updating an agent's own model, prompt,
 or other mutable configuration makes its live participants leave and clears
 their cached contexts. The next dispatch rejoins the agent and resolves a fresh

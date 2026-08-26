@@ -2308,13 +2308,18 @@
             (describe-model-resolution agent-party)
             availability-check
             (when-not (:available? chosen)
+              ;; The human-facing copy travels WITH the failure: the caller
+              ;; that isolates this agent has to name the reason in the room,
+              ;; and model-catalog owns those words for every other surface.
               (throw (ex-info "Agent model is unavailable"
                               {:type :model-unavailable
                                :agent-id agent-uuid
                                :model (:candidate chosen)
                                :provider provider
                                :availability (:availability chosen)
-                               :availability-reason (:availability-reason chosen)})))
+                               :availability-reason (:availability-reason chosen)
+                               :availability-label (:availability-label chosen)
+                               :availability-explanation (:availability-explanation chosen)})))
             _ (log/log! {:level :info :id ::model-resolved
                          :data {:agent (:party/display-name agent-party)
                                 :family (:family chosen)
@@ -2557,6 +2562,65 @@
          {:role :specialist
           :response-policy (if (:party/auto-respond? agent) :always :manual)}))))
 
+(defn- join-failure-note
+  "Room-visible copy for an agent that could not join. The person who would
+   otherwise just see silence needs the agent, the model and the reason in one
+   line. The availability wording comes from `model-catalog/availability-copy`
+   via the join failure, so this note and the settings screens say the same
+   thing about the same state."
+  [agent-party e others-answering?]
+  (let [{:keys [type model availability-label availability-explanation]} (ex-data e)
+        who (or (:party/display-name agent-party) "An agent")
+        ;; Only say it in a room where it is true. In a one-agent room
+        ;; "the other agents are unaffected" is noise at best.
+        others (if others-answering?
+                 " The other agents in this room are unaffected."
+                 "")]
+    (if (= :model-unavailable type)
+      (str "\u26a0\ufe0f " who " cannot answer here. Model status for "
+           (if model (str "`" model "`") "its configured model") ": "
+           (or availability-label "Unavailable") "."
+           (when availability-explanation (str " " availability-explanation))
+           " Pick an available model for " who " in its settings." others)
+      (str "\u26a0\ufe0f " who " could not join this conversation: "
+           (.getMessage e) "." others))))
+
+(defn- log-join-failure!
+  "Telemere record of an isolated join failure — the operator channel."
+  [room-uuid agent-party e]
+  (let [{:keys [type model provider availability availability-reason]} (ex-data e)]
+    (log/log! {:level :warn :id ::agent-join-failed
+               :msg "Agent dropped from this send; its model could not be joined"
+               :data {:room room-uuid
+                      :agent (:party/display-name agent-party)
+                      :agent-id (:party/id agent-party)
+                      :model model
+                      :provider provider
+                      :failure-type (or type :join-error)
+                      :availability availability
+                      :availability-reason availability-reason
+                      :error (.getMessage e)}})))
+
+(defn- post-join-failure-note!
+  "Post the join failure into the room itself, authored by the agent that
+   cannot run, addressed back to the sender so no participant is woken by it.
+   dvergr's `add-system-note!` is the seam for notes an AGENT reads on its next
+   turn — it writes into a chat-ctx, which an agent that failed to join does
+   not have. A note for the HUMAN goes on the room bus, where the room
+   projector persists it into the timeline like any other message."
+  [room room-uuid sender-kw agent-party e others-answering?]
+  (try
+    (binding [rtc/*execution-context* (:ctx room)]
+      (d/post! room (d/message (party->actor-kw agent-party) sender-kw
+                               (join-failure-note agent-party e others-answering?) nil
+                               {:role :system
+                                :system-note (or (:type (ex-data e)) :join-error)})))
+    (catch Exception e2
+      (log/log! {:level :warn :id ::join-failure-note-failed
+                 :data {:room room-uuid
+                        :agent (:party/id agent-party)
+                        :error (.getMessage e2)}}))))
+
 (defn post-user-message!
   "Post a user message into the room's live dvergr discourse Room. Works
    for ALL room kinds — the send path is one:
@@ -2565,12 +2629,19 @@
       dvergr room store ALSO persists it via the bus.
    2. Resolve @handles to room-local actor ids. Unknown/ambiguous mentions fail
       closed; assignment response policies select recipients.
-   3. Post one Message per selected recipient. When a room has assigned agents
-      but none should wake, target the reserved `:_room-log` endpoint so the
-      durable/projector listeners see it without broadcasting to every joined
-      participant. Rooms without agents retain their adapter-facing target.
+   3. Join the selected recipients and post one Message per JOINED recipient;
+      replies route back via the projector. Joins are isolated per agent — an
+      agent whose model is unavailable drops out of this send (logged at :warn,
+      named in the room by a system note) and never blocks the message or the
+      other agents.
+   4. When a room has assigned agents but none should wake — or none of them
+      could join — target the reserved `:_room-log` endpoint so the durable and
+      projector listeners see the message without broadcasting it to every
+      joined participant. Rooms without agents keep their adapter-facing target,
+      so mirrors (the telegram thin-adapter egress) still relay it out.
 
-   Returns {:status :ok :recipients [...]} immediately; replies are async."
+   Returns {:status :ok :recipients [...] :unavailable [...]} immediately;
+   replies are async. The send never fails because a participant cannot run."
   [room-uuid user-message sender-party-id room-conn & [msg-uuid in-reply-to]]
   (ensure-providers!)
   (let [room-parties (rooms/get-room-parties room-uuid)
@@ -2597,28 +2668,49 @@
         ;; replies) idempotently by message id. The client renders the
         ;; send optimistically and reconciles on the sync echo.
         (ensure-room-projector! room room-uuid room-conn)
-        (doseq [agent recipients]
-          (ensure-room-party-entity! room-conn agent)
-          (ensure-agent-joined! room room-uuid agent room-conn))
-        (let [from-kw (party->actor-kw user-uuid)
+        ;; Per-agent isolation: a participant whose model is unavailable
+        ;; (`ensure-agent-joined!` fails closed there, deliberately) drops
+        ;; OUT of this send instead of aborting it. One misconfigured agent
+        ;; used to lose the human's message and silence the healthy agents
+        ;; with nothing in the log to explain it.
+        (let [{:keys [joined failures]}
+              (reduce (fn [acc agent]
+                        (ensure-room-party-entity! room-conn agent)
+                        (try
+                          (ensure-agent-joined! room room-uuid agent room-conn)
+                          (update acc :joined conj agent)
+                          (catch Exception e
+                            (log-join-failure! room-uuid agent e)
+                            (update acc :failures conj [agent e]))))
+                      {:joined [] :failures []}
+                      recipients)
+              from-kw (party->actor-kw user-uuid)
+              ;; Targets: the agents that actually joined. When mention
+              ;; filtering woke nobody — or every selected recipient failed to
+              ;; join — the room still has assigned agents, so the message goes
+              ;; to the reserved `:_room-log` endpoint: durable and projector
+              ;; listeners see it, no participant is woken by it. With no agents
+              ;; at all the broadcast target keeps mirrors (telegram) relaying.
+              targets (cond
+                        (seq joined) (mapv party->actor-kw joined)
+                        (seq all-agents) [:_room-log]
+                        :else [(d/room-target room)])
               ;; All copies of a multi-recipient send share ONE id
               ;; (client-supplied when present) — the projector's upsert
               ;; dedupes them into a single timeline row.
               send-id (or msg-uuid (random-uuid))
               metadata {:role :user :mentions mentions :audience audience}
               msgs (binding [rtc/*execution-context* (:ctx room)]
-                     (->> (if (seq recipients)
-                            (mapv #(d/message from-kw (party->actor-kw %) user-message in-reply-to
-                                              metadata)
-                                  recipients)
-                            [(d/message from-kw
-                                        (if (seq all-agents)
-                                          :_room-log
-                                          (d/room-target room))
-                                        user-message in-reply-to metadata)])
+                     (->> targets
+                          (mapv #(d/message from-kw % user-message in-reply-to metadata))
                           (mapv #(assoc % :id send-id))))]
           (binding [rtc/*execution-context* (:ctx room)]
             (doseq [m msgs]
-              (d/post! room m))))
-        {:status :ok
-         :recipients (mapv :party/id recipients)}))))
+              (d/post! room m)))
+          ;; After the send, so the room reads in causal order: the human's
+          ;; message, then why an agent stayed silent.
+          (doseq [[agent e] failures]
+            (post-join-failure-note! room room-uuid from-kw agent e (boolean (seq joined))))
+          {:status :ok
+           :recipients (mapv :party/id joined)
+           :unavailable (mapv (comp :party/id first) failures)})))))
