@@ -3,6 +3,7 @@
   (:require [org.replikativ.spindel.dom.elements :as el]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.signals :as sig]
+            #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as cr])
             #?(:cljs [is.simm.uis.web.desktop.message-notify-sync :as mns])
             #?(:cljs [is.simm.uis.web.desktop.user-rooms-sync :as urs])
@@ -14,6 +15,7 @@
   "Render room settings. data is {:room ... :humans [...] :agents [...] :all-humans [...] ...}."
   [data]
   (let [room (:room data)
+        room-id (str (:room/id room))
         humans (:humans data)
         agents (:agents data)
         all-humans (:all-humans data)
@@ -68,7 +70,7 @@
                                                              web/server-id
                                                              (str (:room/id room))
                                                              (str pid))]
-                                                     (s (fn [_] (reset! sig/admin-data nil))
+                                                     (s (fn [_] (room-details/load! room-id {:force? true}))
                                                         (fn [err] (js/console.error "[room-settings] remove error:" err))))
                                                    :clj nil))}
                           (vc/icon "x")))))))
@@ -99,7 +101,7 @@
                                                        pid)]
                                                (s (fn [_]
                                                     (set! (.-value sel) "")
-                                                    (reset! sig/admin-data nil))
+                                                    (room-details/load! room-id {:force? true}))
                                                   (fn [err] (js/console.error "[room-settings] add error:" err))))))
                                          :clj nil))}
                 "Add"))))
@@ -142,7 +144,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            agent-id)]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] remove agent error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))
@@ -223,7 +225,7 @@
                                                  (:party/display-name agent)
                                                  ""
                                                  sp)]
-                                        (s (fn [_] (reset! sig/admin-data nil))
+                                        (s (fn [_] (room-details/load! room-id {:force? true}))
                                            (fn [err] (js/console.error "[room-settings] update agent error:" err))))
                                       :clj nil))}
                       "Save")))))
@@ -252,7 +254,7 @@
                                                       tmpl-label
                                                       tmpl-id)]
                                               (s (fn [_]
-                                                   (reset! sig/admin-data nil)
+                                                   (room-details/load! room-id {:force? true})
                                                    ;; Contacts render from
                                                    ;; sig/user-rooms, which
                                                    ;; nothing here refreshed —
@@ -284,7 +286,7 @@
                                                          "")]
                                                  (s (fn [_]
                                                       (set! (.-value input) "")
-                                                      (reset! sig/admin-data nil)
+                                                      (room-details/load! room-id {:force? true})
                                                       (urs/refresh-user-rooms! (:id current-user)))
                                                     (fn [err] (js/console.error "[room-settings] add agent error:" err)))))))
                                          :clj nil))}
@@ -316,7 +318,7 @@
                                                      web/server-id
                                                      (str (:room/id room))
                                                      v)]
-                                             (s (fn [_] (reset! sig/admin-data nil))
+                                             (s (fn [_] (room-details/load! room-id {:force? true}))
                                                 (fn [err] (js/console.error "[room-settings] budget error:" err))))))
                                        :clj nil))}
               "Save")))
@@ -343,7 +345,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:kb/id kb)))]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach KB error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))))
@@ -376,7 +378,7 @@
                                                            kb-id)]
                                                    (s (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (reset! sig/admin-data nil))
+                                                        (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] attach KB error:" err))))))
                                              :clj nil))}
                     "Attach"))))))
@@ -403,7 +405,7 @@
                                                            web/server-id
                                                            (str (:room/id room))
                                                            (str (:drive/id drv)))]
-                                                   (s (fn [_] (reset! sig/admin-data nil))
+                                                   (s (fn [_] (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] detach drive error:" err))))
                                                  :clj nil))}
                         (vc/icon "x")))))
@@ -436,7 +438,7 @@
                                                            drive-id)]
                                                    (s (fn [_]
                                                         (set! (.-value sel) "")
-                                                        (reset! sig/admin-data nil))
+                                                        (room-details/load! room-id {:force? true}))
                                                       (fn [err] (js/console.error "[room-settings] attach drive error:" err))))))
                                              :clj nil))}
                     "Attach"))))))))))

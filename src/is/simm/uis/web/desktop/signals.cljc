@@ -82,6 +82,12 @@
             Shape: {:users [...] :stats {...}} or nil."
            (signal runtime nil)))
 
+#?(:cljs (def room-details
+           "Room settings/inspector payloads keyed by room id.
+            Each entry is {:data payload :loading? boolean :error error} so
+            unrelated room panels never replace one another's rendered data."
+           (signal runtime {})))
+
 #?(:cljs (def screens-results
            "Signal: screens-gallery data per room —
             {<room-id> {:query .. :items [{:at :blob-id :text :score}] :loading? bool}}."

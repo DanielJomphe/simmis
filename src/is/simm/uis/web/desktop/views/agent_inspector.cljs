@@ -23,10 +23,12 @@
    - :agent-name string
    - :model-resolution desired configuration resolution from the server
 
-   admin-data: result of load-room-details!
+   room-details: keyed result state from load-room-details!
    room-states: current room-states signal value (map of scope-str → {:db db})"
-  [data admin-data room-states]
+  [data room-details room-states]
   (let [{:keys [agent-id room-id agent-name model-resolution]} data
+        admin-data (room-details/data-for room-details room-id)
+        room-error (room-details/error-for room-details room-id)
         model (or (:model model-resolution) (:candidate model-resolution))
         label (cond
                 (str/includes? (or model "") "claude") "Claude"
@@ -34,13 +36,11 @@
                 (str/includes? (or model "") "glm")    "GLM"
                 :else (or model "?"))]
     ;; Trigger load if not yet available
-    ;; Guard on THIS room's details. `sig/admin-data` is shared by six panels;
-    ;; a plain nil-guard leaves the inspector rendering another room's data.
+    ;; Details are keyed by room, so another inspector cannot replace this one.
     ;; The load goes through `room-details/load!`, which runs it as a ROOT
     ;; spin. Called straight from this render body it was a created-child of
     ;; the render spin instead, and the next re-run cancelled it mid-flight.
-    (when (or (nil? admin-data)
-              (not= (some-> admin-data :room :room/id str) (str room-id)))
+    (when (and (nil? admin-data) (nil? room-error))
       (room-details/load! room-id))
 
     (let [;; db-scope from admin-data (populated by load-room-details!)
@@ -84,7 +84,10 @@
 
       ;; Body
       (if (nil? admin-data)
-        (el/div {:class "agent-inspector-loading"} "Loading…")
+        (el/div {:class "agent-inspector-loading"}
+          (if room-error
+            (str "Could not load inspector: " room-error)
+            "Loading…"))
 
         (let [agent-config (->> (:agents admin-data)
                                 (filter #(= (str (:party/id %)) agent-id))

@@ -123,7 +123,7 @@
 
 #?(:cljs
    (defn load-room-details-into-signal!
-     "Fire-and-forget load of a room's settings details into sig/admin-data.
+     "Fire-and-forget load of keyed room settings details.
 
       One loader now serves every panel that reads that signal — see
       `is.simm.uis.web.desktop.room-details`, which owns both the root-spin
@@ -888,7 +888,7 @@
 (defn render-column
   "Render a single column with tab bar, content, and context footer.
    Returns a spin (CLJS) or vnode (CLJ)."
-  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-states-arg footer-states]
+  [{:keys [id width tabs active-tab _index _total] :as _col} active-column-id local-db chat-windows settings-data admin-data room-details room-states-arg footer-states]
   #?(:cljs
      ;; CLJS: Wrap in spin since render-tab-content returns vnodes inside spin context
      (spin
@@ -981,7 +981,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-details room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs id)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1066,7 +1066,7 @@
          (render-tab-bar id tabs active-tab nil)
          (el/div {:class "column-content"}
            (if active-tab-data
-             (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows nil nil nil)
+             (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows nil nil nil nil nil)
              (el/div {:class "empty-state"}
                (vc/icon "layout-grid")
                (el/h3 {} "No content")
@@ -1133,7 +1133,7 @@
 
    kb-states arg removed — wiki tabs self-track per-KB signals inside
    render-page-editor / render-context-content."
-  [columns active-column-id local-db chat-windows settings-data admin-data room-states footer-states]
+  [columns active-column-id local-db chat-windows settings-data admin-data room-details room-states footer-states]
   #?(:cljs
      ;; CLJS: Wrap in spin to support await on ifor-each-spin
      (spin
@@ -1151,7 +1151,7 @@
            ;; Columns - ifor-each auto-detects and awaits spins from render-fn
            (await (ifor-each :id indexed-columns
                     (fn [col]
-                      (render-column col active-column-id local-db chat-windows settings-data admin-data room-states footer-states))))
+                      (render-column col active-column-id local-db chat-windows settings-data admin-data room-details room-states footer-states))))
 
            ;; Right drop zone
            (render-drop-zone :right))))
@@ -1179,7 +1179,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
+  [tab-type data local-db chat-windows settings-data admin-data room-details room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs col-id]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1234,7 +1234,7 @@
     ;; implementation. Keep every dispatch, optimistic overlay, and renderer
     ;; path shared; `:thread-view?` only scopes the query and presentation.
     (render-tab-content :chat (assoc data :thread-view? true)
-                        local-db chat-windows settings-data admin-data room-states
+                        local-db chat-windows settings-data admin-data room-details room-states
                         syntax-pref gref video-info screen-sharing screens-results
                         recordings-results web-captures-results chat-reply-targets room-runs col-id)
 
@@ -1750,8 +1750,6 @@
                          :on-click (fn [_]
                                      #?(:cljs
                                         (do
-                                          ;; Clear admin-data so room settings loads fresh
-                                          (reset! sig/admin-data nil)
                                           (sig/open-tab!
                                             :room-settings
                                             {:room-id room-id}
@@ -2239,24 +2237,19 @@
          ;; created-child and get cancelled by the next re-render. The
          ;; helper is idempotent, so calling it on every render while
          ;; admin-data is nil is safe.
-         ;; Guard on THIS ROOM's data, not merely on nil. `sig/admin-data` is
-         ;; shared by six unrelated panels (admin, new-room, new-contact,
-         ;; room-settings, kb-settings, agent inspector), each writing its own
-         ;; shape. A nil-guard therefore misfires two ways: open KB Settings
-         ;; after Room Settings and the load never runs (non-nil, wrong shape,
-         ;; stuck on "Loading…"); open room B after room A and B's tab renders
-         ;; A's settings, with A's Save and Delete wired up.
          (let [want (:room-id data)
-               have (some-> admin-data :room :room/id str)]
-           (when (or (nil? admin-data) (not= have (str want)))
-             (when want (load-room-details-into-signal! want))))
+               room-data (room-details/data-for room-details want)
+               room-error (room-details/error-for room-details want)]
+           (when (and want (nil? room-data) (nil? room-error))
+             (load-room-details-into-signal! want)))
          ;; Render
-         (if (and admin-data (map? admin-data)
-                  (= (some-> admin-data :room :room/id str) (str (:room-id data))))
-           (room-settings-view/render-room-settings admin-data)
+         (if-let [room-data (room-details/data-for room-details (:room-id data))]
+           (room-settings-view/render-room-settings room-data)
            (el/div {:class "settings-page"}
              (el/div {:class "settings-loading"}
-               (el/p {} "Loading room settings...")))))
+               (el/p {} (if-let [error (room-details/error-for room-details (:room-id data))]
+                         (str "Could not load room settings: " error)
+                         "Loading room settings..."))))))
        :clj
        (el/div {:class "content-room-settings"}
          (el/p {} "Room Settings (CLJ mode)")))
@@ -2349,7 +2342,7 @@
 
     :agent
     #?(:cljs
-       (agent-inspector/render-agent-inspector data admin-data room-states)
+       (agent-inspector/render-agent-inspector data room-details room-states)
        :clj
        (el/div {:class "content-agent"}
          (el/p {} "Agent inspector (CLJ mode)")))

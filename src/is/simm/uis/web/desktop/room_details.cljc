@@ -1,5 +1,5 @@
 (ns is.simm.uis.web.desktop.room-details
-  "ONE loader for a room's settings payload (`sig/admin-data`).
+  "ONE loader for room settings payloads, keyed in `sig/room-details`.
 
    Every panel that shows room details reads the same signal, so they must
    also share the way it is refilled. Two rules live here.
@@ -50,6 +50,27 @@
     [(assoc state room-id {:in-flight? true :pending? false}) :start]
     [(dissoc state room-id) :idle]))
 
+(defn successful
+  "Record `payload` for only its room, retaining every other room's state."
+  [details room-id payload]
+  (assoc details room-id {:data payload :loading? false :error nil}))
+
+(defn failed
+  "Record an error for only its room, retaining its last good payload."
+  [details room-id error]
+  (assoc details room-id (assoc (get details room-id) :loading? false :error error)))
+
+(defn loading
+  "Mark only `room-id` loading. A forced reload retains its rendered data."
+  [details room-id]
+  (assoc details room-id (assoc (get details room-id) :loading? true :error nil)))
+
+(defn data-for [details room-id]
+  (get-in details [room-id :data]))
+
+(defn error-for [details room-id]
+  (get-in details [room-id :error]))
+
 #?(:cljs (defonce ^:private loads (atom {})))
 
 #?(:cljs
@@ -67,21 +88,26 @@
            (reset! loads state')
            (binding [rtc/*execution-context* runtime]
              (if err
-               (js/console.error "[room-details] load error:" err)
-               (reset! sig/admin-data ok)))
+               (do
+                 (swap! sig/room-details failed room-id err)
+                 (js/console.error "[room-details] load error:" err))
+               (swap! sig/room-details successful room-id ok)))
            (when (= :start action)
              (fetch! room-id)))))))
 
 #?(:cljs
    (defn load!
-     "Fire-and-forget refill of `sig/admin-data` from `room-id`'s details.
+     "Fire-and-forget refill of `room-id`'s keyed details.
 
       Pass `:force? true` after a write, so the reload observes it rather than
       settling for an answer that was already in flight."
      ([room-id] (load! room-id nil))
      ([room-id {:keys [force?]}]
       (when room-id
-        (let [[state' action] (begin @loads room-id (boolean force?))]
-          (reset! loads state')
-          (when (= :start action)
-            (fetch! room-id)))))))
+        (binding [rtc/*execution-context* runtime]
+          (when (or force? (nil? (data-for @sig/room-details room-id)))
+            (let [[state' action] (begin @loads room-id (boolean force?))]
+              (reset! loads state')
+              (when (= :start action)
+                (swap! sig/room-details loading room-id)
+                (fetch! room-id)))))))))
