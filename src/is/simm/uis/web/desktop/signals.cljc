@@ -997,30 +997,7 @@
                             (swap! drive-data dissoc (str rid)))
                    nil))]
          (swap! layout-columns
-                (fn [cols]
-                  (let [col-idx (find-column-index cols col-id)]
-                    (if-not col-idx
-                      cols
-                      (let [col (nth cols col-idx)
-                            remaining-tabs (vec (remove #(= (:id %) tab-id) (:tabs col)))]
-                        (if (empty? remaining-tabs)
-                          ;; Remove the column entirely
-                          (let [new-cols (vec (concat (subvec cols 0 col-idx)
-                                                      (subvec cols (inc col-idx))))
-                                ;; Redistribute widths
-                                n (count new-cols)]
-                            (if (zero? n)
-                              (default-layout)  ;; Reset if all closed
-                              (mapv #(assoc % :width (/ 1.0 n)) new-cols)))
-                          ;; Update the column with remaining tabs
-                          (let [was-active? (= (:active-tab col) tab-id)
-                                new-active (if was-active?
-                                             (:id (first remaining-tabs))
-                                             (:active-tab col))]
-                            (assoc-in cols [col-idx]
-                                      (-> col
-                                          (assoc :tabs remaining-tabs)
-                                          (assoc :active-tab new-active))))))))))
+                room-actions/close-tab-in-layout col-id tab-id default-layout)
          ;; Clean up KB connection if no tabs use this scope anymore — but
          ;; keep KBs the user owns/has access to connected for the session,
          ;; so the sidebar nav stays live for agent-side writes even when no
@@ -1058,25 +1035,6 @@
        (when-let [found (some (fn [col]
                                 (some (fn [tab]
                                         (when (= (:type tab) tab-type)
-                                          {:col-id (:id col) :tab-id (:id tab)}))
-                                      (:tabs col)))
-                              @layout-columns)]
-         (close-tab! (:col-id found) (:tab-id found))))
-     :clj nil))
-
-(defn close-tab-where!
-  "Close the first tab whose map satisfies `pred`.
-
-   `close-tab-of-type!` cannot express \"this tab, the broken one\": two tabs
-   can share a type AND a room, which is exactly the state a tab that cannot
-   resolve its room shows up in — beside a healthy tab on the same room. A
-   predicate over the whole tab map can name one of them and not the other."
-  [pred]
-  #?(:cljs
-     (binding [rtc/*execution-context* runtime]
-       (when-let [found (some (fn [col]
-                                (some (fn [tab]
-                                        (when (pred tab)
                                           {:col-id (:id col) :tab-id (:id tab)}))
                                       (:tabs col)))
                               @layout-columns)]

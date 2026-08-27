@@ -897,11 +897,11 @@
              ;; from the parent can leave a retained child holding its initial
              ;; nil snapshot after the room handshake completes.
              room-states (iv/get-new (track db-sig/room-states))
-             ;; The owning column travels WITH the tab data: a room header
-             ;; action rendered in an inactive column must act on that column,
-             ;; not on whichever one happens to be focused.
+             ;; The owning column and tab travel WITH the tab data: a room
+             ;; header action rendered in an inactive column must act on that
+             ;; column's exact tab, not on whichever one happens to be focused.
              active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
-                                     (update :data assoc :col-id id))
+                                     (as-> tab (assoc tab :data (room-actions/tab-render-data id tab))))
              is-active? (= id active-column-id)
              index _index
              total-columns _total
@@ -1060,7 +1060,7 @@
      ;; CLJ: Simple vnodes
      (let [room-states room-states-arg
            active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
-                                   (update :data assoc :col-id id))
+                                   (as-> tab (assoc tab :data (room-actions/tab-render-data id tab))))
            is-active? (= id active-column-id)
            index _index
            total-columns _total]
@@ -1351,6 +1351,7 @@
     #?(:cljs
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
        (let [col-id (:col-id data)
+             tab-id (:tab-id data)
              room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
              room-name (or (:room-name data) "Chat")
              room-uuid (uuid room-id)
@@ -1926,23 +1927,15 @@
                             "No replies yet. Continue the thread below."
                             :else
                             "No messages yet. Start the conversation!"))
-                 ;; A dead end deserves a way out. Closing is precise —
-                 ;; `:room-missing?` is on this tab and not on a healthy tab
-                 ;; for the same room, which is exactly how the two coexist.
+                 ;; A dead end deserves a way out. The render path carries the
+                 ;; owning column and tab IDs, so this cannot close a different
+                 ;; stale or healthy tab for the same room.
                  (when room-missing?
                    (el/button {:class "chat-empty-action"
                                :on-click
                                #?(:cljs
                                   (fn [_]
-                                    (sig/close-tab-where!
-                                      (fn [t]
-                                        (and (= :chat (:type t))
-                                             (get-in t [:data :room-missing?])
-                                             ;; `(:room-id data)`, not `room-id`:
-                                             ;; the latter is the placeholder
-                                             ;; fallback and would match nothing.
-                                             (= (:room-id data)
-                                                (get-in t [:data :room-id]))))))
+                                    (sig/close-tab! col-id tab-id))
                                   :clj nil)}
                      "Close this tab"))))
 
