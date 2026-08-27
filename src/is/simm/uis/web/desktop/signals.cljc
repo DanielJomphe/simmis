@@ -20,6 +20,7 @@
      ;; Update signals directly:
      (swap! nav-collapsed-projects conj project-id)"
   (:require [is.simm.uis.web.desktop.db-signal :as db]
+            [is.simm.uis.web.desktop.room-actions :as room-actions]
             #?(:cljs [is.simm.uis.web.desktop.datahike-query :as dq])
             #?(:cljs [org.replikativ.spindel.signal :refer [->SignalRef]])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
@@ -815,13 +816,7 @@
                cols @layout-columns
                target-col-id (or col-id (get-active-column-id cols))]
            (swap! layout-columns
-                  (fn [cols]
-                    (let [target-idx (or (find-column-index cols target-col-id) 0)]
-                      (update-in cols [target-idx]
-                                 (fn [col]
-                                   (-> col
-                                       (update :tabs conj new-tab)
-                                       (assoc :active-tab (:id new-tab)))))))))
+                  room-actions/add-tab-to-column target-col-id new-tab))
 
          ;; Default: Navigate in current tab (replace active tab content)
          ;; Uses active column if no col-id specified

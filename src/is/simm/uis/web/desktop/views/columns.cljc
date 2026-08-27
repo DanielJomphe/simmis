@@ -16,6 +16,7 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.routes :as routes]
+            [is.simm.uis.web.desktop.room-actions :as room-actions]
             [is.simm.uis.web.desktop.views.chat :as chat]
             [is.simm.uis.web.desktop.views.settings :as settings-view]
             [is.simm.uis.web.desktop.views.profile :as profile-view]
@@ -896,7 +897,11 @@
              ;; from the parent can leave a retained child holding its initial
              ;; nil snapshot after the room handshake completes.
              room-states (iv/get-new (track db-sig/room-states))
-             active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+             ;; The owning column travels WITH the tab data: a room header
+             ;; action rendered in an inactive column must act on that column,
+             ;; not on whichever one happens to be focused.
+             active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
+                                     (update :data assoc :col-id id))
              is-active? (= id active-column-id)
              index _index
              total-columns _total
@@ -1054,7 +1059,8 @@
      :clj
      ;; CLJ: Simple vnodes
      (let [room-states room-states-arg
-           active-tab-data (first (filter #(= (:id %) active-tab) tabs))
+           active-tab-data (some-> (first (filter #(= (:id %) active-tab) tabs))
+                                   (update :data assoc :col-id id))
            is-active? (= id active-column-id)
            index _index
            total-columns _total]
@@ -1198,11 +1204,12 @@
                                            first)
                                        (first (:rooms ur)))]
                          (when room
-                           (sig/open-tab! :chat
+                         (sig/open-tab! :chat
                                           {:room-id (str (:room/id room))
                                            :room-name (:room/name room)
                                            :db-scope (:room/content-db-scope room)}
-                                          {:title (:room/name room)}))))}
+                                          {:title (:room/name room)
+                                           :col-id (:col-id data)}))))}
            "Start chatting with your agents →")
          :clj nil)
       (el/p {:class "home-hint"}
@@ -1343,7 +1350,8 @@
     :chat
     #?(:cljs
        ;; All chats (including Vár AI) use messages from the room's own Datahike DB
-       (let [room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
+       (let [col-id (:col-id data)
+             room-id (or (:room-id data) "11111111-1111-1111-1111-111111111111")
              room-name (or (:room-name data) "Chat")
              room-uuid (uuid room-id)
              room-db-scope (:db-scope data)
@@ -1703,22 +1711,18 @@
                          :title "Screens (recorded shares)"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :screens
-                                          {:room-id room-id :room-name room-name}
-                                          {:title (str room-name " Screens")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :screens room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "images" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
                          :title "Video call"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :video
-                                          {:room-id room-id :room-name room-name}
-                                          {:title (str room-name " Call")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :video room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "video" {:class "chat-settings-icon"}))
              ;; Open the room's static site (dvergr.web.apps → /apps/<slug>/).
@@ -1738,23 +1742,20 @@
                          :title "Files"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (sig/open-tab!
-                                          :files
-                                          {:room-id room-id}
-                                          {:title (str room-name " Files")
-                                           :new-tab? true})
+                                        (let [[tab-type tab-data opts]
+                                              (room-actions/room-header-tab col-id :files room-id room-name)]
+                                          (sig/open-tab! tab-type tab-data opts))
                                         :clj nil))}
                (vc/icon "folder" {:class "chat-settings-icon"}))
              (el/button {:class "chat-settings-btn"
                          :title "Room settings"
                          :on-click (fn [_]
                                      #?(:cljs
-                                        (do
-                                          (sig/open-tab!
-                                            :room-settings
-                                            {:room-id room-id}
-                                            {:title (str room-name " Settings")
-                                             :new-tab? true}))
+                                        (sig/open-tab! :room-settings
+                                                       {:room-id room-id}
+                                                       {:title (str room-name " Settings")
+                                                        :new-tab? true
+                                                        :col-id col-id})
                                         :clj nil))}
                (vc/icon "settings" {:class "chat-settings-icon"})))
 
@@ -2379,7 +2380,8 @@
                                                             :anchor-message (:message-uuid backlink)}
                                                      scope (assoc :db-scope scope))
                                                    {:title title
-                                                    :new-column? new-column?}))))
+                                                    :new-column? new-column?
+                                                    :col-id (:col-id backlink)}))))
                               :clj nil))}
         (vc/icon "message-circle")
         (el/span {} title)
@@ -2396,7 +2398,8 @@
                               (let [new-column? (or (.-metaKey e) (.-ctrlKey e))]
                                 (sig/open-tab! :chat {:room-name title}
                                                {:title title
-                                                :new-column? new-column?}))
+                                                :new-column? new-column?
+                                                :col-id (:col-id backlink)}))
                               :clj nil))}
         (vc/icon "message-circle")
         (el/span {} title))
@@ -2412,7 +2415,8 @@
                                   (sig/open-tab! :wiki (cond-> {:page-uuid uuid}
                                                          (:db-scope backlink) (assoc :db-scope (:db-scope backlink)))
                                                  {:title page-title
-                                                  :new-column? new-column?}))
+                                                  :new-column? new-column?
+                                                  :col-id (:col-id backlink)}))
                                 :clj nil))}
           (vc/icon "corner-down-left")
           (el/span {} page-title))))))
@@ -2453,7 +2457,7 @@
             (ifor-each #(or (some-> (:entity/uuid %) str)
                             (str "chat-" (:title %)))
               backlinks
-              (fn [bl] (render-backlink-item bl)))
+              (fn [bl] (render-backlink-item (assoc bl :col-id (:col-id data)))))
             (el/div {:key (str key-prefix "-no-backlinks")
                      :class "context-item context-item--empty"}
               (vc/icon "link-2")
