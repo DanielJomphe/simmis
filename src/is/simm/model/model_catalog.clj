@@ -188,13 +188,22 @@
    every Fireworks family, the product default included, as \"Not yet
    supported\". Opening Settings on a fresh boot was enough.
 
-   Idempotent, and no network: it re-reads one classpath resource and
-   overwrites the same entries. Deliberately not `providers/ensure-initialized!`
-   — whether a provider record exists is a different question from whether the
-   metadata is loaded, and that check short-circuits once any provider (a local
-   Claude CLI, say) has registered."
+   `ensure-models-loaded!` is dvergr's own operation for exactly this call
+   site — it reads the resource once and then answers from the loaded registry.
+   The raw `load-models-resource!` is a MERGE, so calling it per render put the
+   resource's value back over anything registered since: a runtime or custom
+   entry lost its metadata the next time a picker drew or a preference was
+   validated. Rendering a list must not rewrite the registry it reads.
+
+   A failed read leaves dvergr's flag clear, so the next picker retries. No
+   reporting is lost here: simmis never caught or logged this call, and a model
+   still missing from the registry renders as its own explicit availability
+   state. Deliberately not `providers/ensure-initialized!` — whether a provider
+   record exists is a different question from whether the metadata is loaded,
+   and that check short-circuits once any provider (a local Claude CLI, say)
+   has registered."
   []
-  (registry/load-models-resource!))
+  (registry/ensure-models-loaded!))
 
 (def ^:private max-versions
   "How many preferred versions to offer under a family.

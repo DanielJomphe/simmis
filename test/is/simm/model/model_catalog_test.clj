@@ -40,6 +40,25 @@
 (defn- curated-values []
   (into #{} (map #(or (:family %) (:model %))) catalog/curated))
 
+(defn- with-unloaded-registry
+  "Run `f` against the registry a fresh JVM has before anything loads
+   models.edn. dvergr's `ensure-models-loaded!` reads a process-wide flag, so
+   stripping the entries is only half of that state — a run whose earlier test
+   already loaded the resource would otherwise start from a flag that says the
+   work is done."
+  [f]
+  (let [loaded @registry/registry
+        flag @#'registry/models-loaded?
+        was-loaded? @flag]
+    (try
+      (reset! registry/registry
+              (into {} (remove #(= :fireworks (:provider (val %)))) loaded))
+      (reset! flag false)
+      (f)
+      (finally
+        (reset! registry/registry loaded)
+        (reset! flag was-loaded?)))))
+
 (deftest preferred-version-status-keeps-the-preference-selected
   (let [info {:preferred? true
               :preferred-model "gpt-5.5-luna"
@@ -129,27 +148,62 @@
   ;; agent has run — opening Settings on a fresh boot — and every Fireworks
   ;; family, the product default included, then read "Not supported" and
   ;; could not be saved.
-  (let [loaded @registry/registry]
-    (try
-      (reset! registry/registry
-              (into {} (remove #(= :fireworks (:provider (val %)))) loaded))
-      (is (nil? (registry/get-model fireworks-model))
-          "precondition: no Fireworks metadata is loaded yet")
-      (fake/with-server
-       (fn [fixture]
-         (fake/respond! fixture "/fireworks/models" fireworks-key
-                        [fireworks-model])
-         (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
-           (fn []
-             (let [rows (catalog/choices)
-                   latest (row rows "accounts/fireworks/models/glm-*")]
-               (is (= :available (:availability latest)))
-               (is (= fireworks-model (:resolves latest)))
-               (is (= fireworks-model
-                      (:resolves (catalog/require-available-choice!
-                                  "accounts/fireworks/models/glm-*")))
-                   "and the save path accepts it"))))))
-      (finally (reset! registry/registry loaded)))))
+  (with-unloaded-registry
+   (fn []
+     (is (nil? (registry/get-model fireworks-model))
+         "precondition: no Fireworks metadata is loaded yet")
+     (fake/with-server
+      (fn [fixture]
+        (fake/respond! fixture "/fireworks/models" fireworks-key
+                       [fireworks-model])
+        (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+          (fn []
+            (let [rows (catalog/choices)
+                  latest (row rows "accounts/fireworks/models/glm-*")]
+              (is (some? (registry/get-model fireworks-model))
+                  "building the picker is what loaded the metadata")
+              (is (= :available (:availability latest)))
+              (is (= fireworks-model (:resolves latest)))
+              (is (= fireworks-model
+                     (:resolves (catalog/require-available-choice!
+                                 "accounts/fireworks/models/glm-*")))
+                  "and the save path accepts it")))))))))
+
+(deftest repeated-picker-renders-keep-a-runtime-registration
+  ;; Loading the resource and MERGING it is not the same operation as making
+  ;; sure it is loaded. The picker did the first, on every call, so the
+  ;; resource's own metadata was written back over anything registered since —
+  ;; a runtime or custom entry lost its pricing and name to nothing more than a
+  ;; second render of the list, or a second validation of a stored preference.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         ;; The first render legitimately loads: this asserts about the ones
+         ;; after it.
+         (catalog/choices)
+         (let [runtime-name "GLM 5.2 (runtime)"
+               runtime-pricing {:input 9.99 :output 19.99}]
+           (is (not= runtime-pricing
+                     (:pricing (registry/get-model fireworks-model)))
+               "precondition: the runtime values differ from the resource's")
+           (registry/register-model!
+            (assoc (registry/get-model fireworks-model)
+                   :name runtime-name
+                   :pricing runtime-pricing))
+           (dotimes [_ 3]
+             (let [latest (row (catalog/choices)
+                               "accounts/fireworks/models/glm-*")]
+               (is (= :available (:availability latest))
+                   "and availability still reads from the same registry"))
+             (catalog/choice fireworks-model)
+             (catalog/require-available-choice!
+              "accounts/fireworks/models/glm-*")
+             (catalog/require-usable-preference! fireworks-model))
+           (let [registered (registry/get-model fireworks-model)]
+             (is (= runtime-name (:name registered)))
+             (is (= runtime-pricing (:pricing registered))))))))))
 
 (deftest served-registry-and-account-states-share-one-picker-model
   (fake/with-server
