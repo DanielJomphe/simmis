@@ -6,6 +6,7 @@
             [is.simm.uis.web.desktop.signals :as sig]
             [is.simm.runtimes.web :as web]
             [is.simm.uis.web.desktop.chat-remote :as chat-remote]
+            [is.simm.uis.web.desktop.room-details :as room-details]
             [org.replikativ.spindel.engine.core :as rtc]
             [is.simm.uis.web.desktop.runtime :refer [runtime]]
             [datahike.api :as d]
@@ -35,14 +36,12 @@
     ;; Trigger load if not yet available
     ;; Guard on THIS room's details. `sig/admin-data` is shared by six panels;
     ;; a plain nil-guard leaves the inspector rendering another room's data.
+    ;; The load goes through `room-details/load!`, which runs it as a ROOT
+    ;; spin. Called straight from this render body it was a created-child of
+    ;; the render spin instead, and the next re-run cancelled it mid-flight.
     (when (or (nil? admin-data)
               (not= (some-> admin-data :room :room/id str) (str room-id)))
-      (when room-id
-        (let [s (chat-remote/load-room-details! web/server-id room-id)]
-          (s (fn [result]
-               (binding [rtc/*execution-context* runtime]
-                 (reset! sig/admin-data result)))
-             (fn [err] (js/console.error "[agent-inspector] load error:" err))))))
+      (room-details/load! room-id))
 
     (let [;; db-scope from admin-data (populated by load-room-details!)
           room-db-scope (when admin-data (str (get-in admin-data [:room :room/content-db-scope])))
@@ -204,7 +203,12 @@
                                   (:agent-id selected-row)
                                   (:agent-name selected-row)
                                   value nil)]
-                           (s (fn [_] (reset! sig/admin-data nil))
+                           ;; Reload rather than blank the signal: six panels
+                           ;; read it, and a nil here made this panel flash
+                           ;; "Loading…" on its way to a refill that a re-run
+                           ;; then cancelled. `:force?` is what makes the
+                           ;; reload observe the write just made.
+                           (s (fn [_] (room-details/load! room-id {:force? true}))
                               (fn [err]
                                 (js/console.error
                                  "[agent-inspector] model error:" err)))))))))))
@@ -245,7 +249,7 @@
                                    s  (chat-remote/update-agent-config!
                                         web/server-id agent-id agent-name "" sp)]
                                (s (fn [_]
-                                    (reset! sig/admin-data nil))
+                                    (room-details/load! room-id {:force? true}))
                                   (fn [err] (js/console.error "[agent-inspector] update error:" err)))))}
                 "Save")))
 

@@ -48,6 +48,7 @@
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
             #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
             #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
+            #?(:cljs [is.simm.uis.web.desktop.room-details :as room-details])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
             #?(:cljs [is.simm.uis.web.desktop.admin-remote :as admin-remote])
             #?(:cljs [is.simm.uis.web.desktop.block-editor :as block-editor])
@@ -120,35 +121,15 @@
 
                nil))))))
 
-#?(:cljs (defonce ^:private room-details-loading (atom #{})))
-
 #?(:cljs
    (defn load-room-details-into-signal!
      "Fire-and-forget load of a room's settings details into sig/admin-data.
 
-      Runs the remote `load-room-details!` spin INSIDE a go block — not
-      invoked directly from a render body. A spin invoked from inside a
-      render body becomes a created-child of the render spin, so the next
-      `invalidate-created-spins!` (which fires on every parent re-run)
-      cancels it mid-flight and the result never lands. The go block runs
-      outside any spin scope (`*spin-id*` unbound), so the spin is a root
-      spin and survives parent re-renders. Idempotent per room-id —
-      mirrors db-signal/connect-room! / connect-kb!."
+      One loader now serves every panel that reads that signal — see
+      `is.simm.uis.web.desktop.room-details`, which owns both the root-spin
+      go block and the in-flight bookkeeping."
      [room-id]
-     (when (and room-id (not (contains? @room-details-loading room-id)))
-       (swap! room-details-loading conj room-id)
-       (go
-         (let [ch (promise-chan)]
-           (binding [rtc/*execution-context* runtime]
-             (let [s (chat-remote/load-room-details! web/server-id room-id)]
-               (s (fn [result] (put! ch {:ok result}))
-                  (fn [err] (put! ch {:err err})))))
-           (let [{:keys [ok err]} (<! ch)]
-             (swap! room-details-loading disj room-id)
-             (binding [rtc/*execution-context* runtime]
-               (if err
-                 (js/console.error "[room-settings] load error:" err)
-                 (reset! sig/admin-data ok)))))))))
+     (room-details/load! room-id)))
 
 #?(:cljs (defonce ^:private settings-data-loading (atom false)))
 
