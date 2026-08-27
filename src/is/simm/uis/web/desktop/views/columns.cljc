@@ -1387,9 +1387,18 @@
              ;; Get the room's DB from room-states (nil while connecting)
              room-db (when room-db-scope (get-in room-states [(str room-db-scope) :db]))
 
+             ;; The roster's verdict on this tab (written by
+             ;; `user-rooms-sync/heal-chat-tab` when the roster arrives): this
+             ;; tab names no room this party can open. It is a CONCLUSION, so
+             ;; the render can act on it rather than waiting.
+             room-missing? (:room-missing? data)
+
              ;; Ensure room chatroom + user entities exist in room DB (side effect)
-             ;; Guard against placeholder room-id before real room is loaded
+             ;; Guard against placeholder room-id before real room is loaded,
+             ;; and against a tab that names no room — that one would create a
+             ;; room for a uuid nobody asked for.
              _ (when (and (string? room-id)
+                          (not room-missing?)
                           (not= room-id "personal-ai-placeholder"))
                  (when-let [user @sig/current-user]
                    (let [s (chat-remote/ensure-room!
@@ -1426,7 +1435,11 @@
              ;; the absence of messages. The replica connect is seconds of work
              ;; on a cold boot (konserve-sync materialising the room store), and
              ;; for all of it the room asserted it was empty.
-             db-loading? (nil? effective-db)
+             ;; ...and "loading" must be a claim we can keep. A tab whose
+             ;; room the roster does not name has no replica coming: nothing
+             ;; is connecting, so nothing will arrive, and the spinner would
+             ;; run until the tab is closed. That is the third state below.
+             db-loading? (and (nil? effective-db) (not room-missing?))
              ;; Wrap db in interval for query-with-deltas
              db-iv (iv/->Interval nil effective-db nil)
              ;; Windowed timeline: the window is applied IN the query layer
@@ -1884,15 +1897,28 @@
                                      :content (:block/content item)}))
                        :syntax-pref syntax-pref})))))
 
-             ;; Empty state — three distinct states, because they
-             ;; are three distinct facts: the replica has not arrived (nothing
-             ;; is known yet), the past cut holds nothing, or the room is
-             ;; genuinely empty. Only the last one is an invitation to type.
+             ;; Empty state — four distinct states, because they
+             ;; are four distinct facts: this tab names no room we can open,
+             ;; the replica has not arrived (nothing is known yet), the past
+             ;; cut holds nothing, or the room is genuinely empty. Only the
+             ;; last one is an invitation to type.
              (when (empty? (iv/get-new visible-iv))
-               (el/div {:class (str "chat-empty" (when db-loading? " chat-empty--loading"))}
-                 (vc/icon (if db-loading? :loader :message-circle)
-                          {:class "chat-empty-icon"})
+               (el/div {:class (str "chat-empty"
+                                    (when db-loading? " chat-empty--loading")
+                                    (when room-missing? " chat-empty--unresolved"))}
+                 ;; NO icon in the unresolved state, rather than a different
+                 ;; one. Lucide's observer REPLACES the `<i data-lucide>` node
+                 ;; spindel rendered with its own `<svg>`, so a later attribute
+                 ;; update lands on a node that is no longer in the tree and the
+                 ;; previous glyph survives — here that glyph is the spinner,
+                 ;; i.e. exactly the claim this state exists to stop making.
+                 ;; Removing the node is a removal, which does take.
+                 (when-not room-missing?
+                   (vc/icon (if db-loading? :loader :message-circle)
+                            {:class "chat-empty-icon"}))
                  (el/p {} (cond
+                            room-missing?
+                            "This tab does not name a room you can open. It may have been deleted, or shared with a different account."
                             db-loading?
                             "Loading messages…"
                             time-travel?
@@ -1900,7 +1926,26 @@
                             thread-view?
                             "No replies yet. Continue the thread below."
                             :else
-                            "No messages yet. Start the conversation!"))))
+                            "No messages yet. Start the conversation!"))
+                 ;; A dead end deserves a way out. Closing is precise —
+                 ;; `:room-missing?` is on this tab and not on a healthy tab
+                 ;; for the same room, which is exactly how the two coexist.
+                 (when room-missing?
+                   (el/button {:class "chat-empty-action"
+                               :on-click
+                               #?(:cljs
+                                  (fn [_]
+                                    (sig/close-tab-where!
+                                      (fn [t]
+                                        (and (= :chat (:type t))
+                                             (get-in t [:data :room-missing?])
+                                             ;; `(:room-id data)`, not `room-id`:
+                                             ;; the latter is the placeholder
+                                             ;; fallback and would match nothing.
+                                             (= (:room-id data)
+                                                (get-in t [:data :room-id]))))))
+                                  :clj nil)}
+                     "Close this tab"))))
 
              ;; AI thinking indicator
              (when (and is-ai-room?

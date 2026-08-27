@@ -3253,6 +3253,29 @@ body {
   animation: spin 1s linear infinite;
 }
 
+/* A tab that names no openable room. No spinner: nothing is arriving, and a
+   spinner here is the lie this state exists to stop telling. */
+.chat-empty--unresolved {
+  max-width: 44ch;
+  margin: 0 auto;
+}
+
+.chat-empty-action {
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--mono-border);
+  border-radius: var(--radius-sm);
+  background: var(--mono-bg-elevated);
+  color: var(--mono-text-secondary);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.chat-empty-action:hover {
+  color: var(--mono-text-primary);
+  border-color: var(--mono-text-tertiary);
+}
+
 /* Chat scroll indicator (virtual scroll) */
 .chat-scroll-indicator {
   display: flex;

@@ -1063,6 +1063,25 @@
          (close-tab! (:col-id found) (:tab-id found))))
      :clj nil))
 
+(defn close-tab-where!
+  "Close the first tab whose map satisfies `pred`.
+
+   `close-tab-of-type!` cannot express \"this tab, the broken one\": two tabs
+   can share a type AND a room, which is exactly the state a tab that cannot
+   resolve its room shows up in — beside a healthy tab on the same room. A
+   predicate over the whole tab map can name one of them and not the other."
+  [pred]
+  #?(:cljs
+     (binding [rtc/*execution-context* runtime]
+       (when-let [found (some (fn [col]
+                                (some (fn [tab]
+                                        (when (pred tab)
+                                          {:col-id (:id col) :tab-id (:id tab)}))
+                                      (:tabs col)))
+                              @layout-columns)]
+         (close-tab! (:col-id found) (:tab-id found))))
+     :clj nil))
+
 (defn set-active-tab!
   "Set the active tab in a column."
   [col-id tab-id]
