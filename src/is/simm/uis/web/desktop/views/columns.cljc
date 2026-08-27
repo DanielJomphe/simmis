@@ -16,6 +16,8 @@
             [org.replikativ.spindel.effects.track :refer [track]]
             [is.simm.uis.web.desktop.views.core :as vc]
             [is.simm.uis.web.desktop.routes :as routes]
+            [is.simm.uis.web.desktop.backlink-target :as bt]
+            [is.simm.uis.web.desktop.tab-heal :as tab-heal]
             [is.simm.uis.web.desktop.room-actions :as room-actions]
             [is.simm.uis.web.desktop.views.chat :as chat]
             [is.simm.uis.web.desktop.views.settings :as settings-view]
@@ -2347,73 +2349,56 @@
       (el/p {} (str "Unknown tab type: " tab-type)))))
 
 (defn render-backlink-item
-  "Render a single backlink item.
-   Handles both page backlinks and chat room backlinks."
-  [backlink]
-  (let [bl-type (:type backlink)
-        title (:title backlink)]
-    (case bl-type
-      ;; Chat message backlink — jump to the exact position in the room
-      ;; (:anchor-message; db-scope resolved from the user-rooms roster).
-      :chat-message
-      (el/div {:key (str "chatmsg-" (:message-uuid backlink))
-               :class "context-item context-item--clickable"
-               :on-click (fn [e]
-                           #?(:cljs
-                              (let [new-column? (or (.-metaKey e) (.-ctrlKey e))
-                                    room-uuid (:room-uuid backlink)]
-                                (binding [rtc/*execution-context* runtime]
-                                  (let [scope (or (:db-scope backlink)
-                                                  (let [ur @sig/user-rooms
-                                                        rooms (or (:rooms ur) (when (vector? ur) ur))]
-                                                    (:room/content-db-scope
-                                                     (first (filter #(= room-uuid (str (:room/id %))) rooms)))))]
-                                    (sig/open-tab! :chat
-                                                   (cond-> {:room-id room-uuid
-                                                            :room-name title
-                                                            :anchor-message (:message-uuid backlink)}
-                                                     scope (assoc :db-scope scope))
-                                                   {:title title
-                                                    :new-column? new-column?
-                                                    :col-id (:col-id backlink)}))))
-                              :clj nil))}
-        (vc/icon "message-circle")
-        (el/span {} title)
-        (when-let [ts (:sent-at backlink)]
-          (el/span {:class "context-item-meta"}
-            #?(:cljs (.toLocaleDateString (js/Date. ts)) :clj ""))))
+  "Render a single backlink row.
 
-      ;; Chat room backlink - link to chat room (legacy shape)
-      :chat-room
-      (el/div {:key (str "chat-" title)
+   The decision — which tab this opens, or why it opens nothing — lives in
+   `backlink-target`, so it can be tested without a DOM. This renders it.
+
+   A row that carries no identity is NOT a control. It renders greyed out,
+   with no `:on-click` and no pointer cursor, and says why on hover. The
+   alternative it replaces was a clickable row that guessed a room from its
+   display name: before SIM-R08 that tab loaded forever, after SIM-R08 it
+   reports a missing room. Neither is a link — one is a control that fails
+   every time it is used, which is worse than a visibly dead one."
+  [backlink]
+  (let [{:keys [action reason tab-type title]}
+        (bt/target backlink (:db-scope backlink))
+        chat? (contains? #{:chat-message :chat-room} (:type backlink))]
+    (if (= :unavailable action)
+      (el/div {:key (bt/render-key backlink)
+               :class "context-item context-item--unavailable"
+               :title (bt/explanation reason)}
+        (vc/icon "alert-circle")
+        (el/span {} title)
+        (el/span {:class "context-item-meta"} "unavailable"))
+      (el/div {:key (bt/render-key backlink)
                :class "context-item context-item--clickable"
                :on-click (fn [e]
                            #?(:cljs
                               (let [new-column? (or (.-metaKey e) (.-ctrlKey e))]
-                                (sig/open-tab! :chat {:room-name title}
-                                               {:title title
-                                                :new-column? new-column?
-                                                :col-id (:col-id backlink)}))
+                                (binding [rtc/*execution-context* runtime]
+                                  ;; Scope is resolved HERE, not at render
+                                  ;; time: the roster is a closure variable
+                                  ;; and `ifor-each` diffs on the item, so a
+                                  ;; scope baked into the row at render time
+                                  ;; would be whatever the roster said when
+                                  ;; the row was first drawn.
+                                  (let [scope (or (:db-scope backlink)
+                                                  (when chat?
+                                                    (bt/room-scope
+                                                      (tab-heal/roster-rooms @sig/user-rooms)
+                                                      (:room-uuid backlink))))]
+                                    (sig/open-tab! tab-type
+                                                   (:tab-data (bt/target backlink scope))
+                                                   {:title title
+                                                    :new-column? new-column?
+                                                    :col-id (:col-id backlink)}))))
                               :clj nil))}
-        (vc/icon "message-circle")
-        (el/span {} title))
-
-      ;; Page backlink (default) - link to wiki page
-      (let [uuid (:entity/uuid backlink)
-            page-title (or (:S.Page/title backlink) title "Untitled")]
-        (el/div {:key (str uuid)
-                 :class "context-item context-item--clickable"
-                 :on-click (fn [e]
-                             #?(:cljs
-                                (let [new-column? (or (.-metaKey e) (.-ctrlKey e))]
-                                  (sig/open-tab! :wiki (cond-> {:page-uuid uuid}
-                                                         (:db-scope backlink) (assoc :db-scope (:db-scope backlink)))
-                                                 {:title page-title
-                                                  :new-column? new-column?
-                                                  :col-id (:col-id backlink)}))
-                                :clj nil))}
-          (vc/icon "corner-down-left")
-          (el/span {} page-title))))))
+        (vc/icon (if chat? "message-circle" "corner-down-left"))
+        (el/span {} title)
+        (when-let [ts (:sent-at backlink)]
+          (el/span {:class "context-item-meta"}
+            #?(:cljs (.toLocaleDateString (js/Date. ts)) :clj "")))))))
 
 (defn render-context-content
   "Render context content for a tab based on its type.
@@ -2448,8 +2433,7 @@
                    :class "context-section-title"}
             (str "Backlinks (" (count backlinks) ")"))
           (if (seq backlinks)
-            (ifor-each #(or (some-> (:entity/uuid %) str)
-                            (str "chat-" (:title %)))
+            (ifor-each bt/render-key
               backlinks
               (fn [bl] (render-backlink-item (assoc bl :col-id (:col-id data)))))
             (el/div {:key (str key-prefix "-no-backlinks")

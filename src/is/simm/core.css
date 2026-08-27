@@ -5340,6 +5340,19 @@ body.tab-dragging .column-drop-zone {
   color: var(--mono-text-tertiary);
 }
 
+/* A backlink row that records no identity — see `backlink-target`. Not a
+   control: no pointer, no hover affordance, and a `title` saying why. */
+.context-item--unavailable {
+  cursor: default;
+  color: var(--mono-text-tertiary);
+  opacity: 0.7;
+}
+
+.context-item--unavailable:hover {
+  color: var(--mono-text-tertiary);
+  background: none;
+}
+
 .context-item svg,
 .context-item i {
   width: 12px;
