@@ -31,11 +31,13 @@
    evidence with the static registry rather than maintaining another version
    list.
 
-   The CATALOG spans every OpenAI-compatible endpoint this machine has a key for
-   — Fireworks and OpenAI both — while retaining which provider, credential and
-   base URL produced every model id. Availability is endpoint-local: one
-   provider going dark cannot erase another provider's answer or turn stale ids
-   into claims that they are currently reachable."
+   The CATALOG asks every endpoint this machine has a key for which model ids
+   it serves, and retains which provider, credential and base URL produced each
+   one. Each endpoint is read under its OWN contract — see `catalog-contracts`,
+   which records what the vendor documents and what is merely observed of an
+   OpenAI-compatible base. Availability is endpoint-local: one provider going
+   dark cannot erase another provider's answer or turn stale ids into claims
+   that they are currently reachable."
   (:require [clojure.string :as str]
             [dvergr.model.registry :as registry]
             [taoensso.telemere :as log]))
@@ -51,9 +53,11 @@
 (def provider-contracts
   "The provider facts simmis can know without asking a provider.
 
-   `:catalog-required?` means the account's `/models` response participates in
-   availability. Anthropic does not expose that OpenAI-protocol endpoint here,
-   so its curated rows are gated by credential + registry/adapter support.
+   `:catalog-required?` means a model list from this provider's own endpoint
+   participates in availability. WHICH list, and on whose authority, is per
+   endpoint rather than per protocol — see `catalog-contracts`. Anthropic
+   exposes no list this code reads, so its curated rows are gated by
+   credential + registry/adapter support.
    Keeping the exact environment variable beside the adapter contract is what
    lets every unavailable surface give the same actionable explanation."
   {:openai {:credential-source "OPENAI_API_KEY"
@@ -73,7 +77,12 @@
    problem; a registry/adapter gap is certain even during an endpoint outage;
    only a fully implemented candidate can be temporarily unreachable or absent
    from the account. `served?` is last-known provider evidence, never a reason
-   to register a model dynamically."
+   to register a model dynamically.
+
+   A REJECTED credential is separated from an outage. Both leave the account's
+   model list unknown, but one is a permanent configuration fault the operator
+   can fix and the other is a wait. Collapsing them told an operator whose key
+   had been revoked to sit and wait for a refresh that could never succeed."
   [{:keys [provider-known? credential-present? registered? implemented?
            catalog-required? catalog-reachability served?]}]
   (cond
@@ -81,6 +90,8 @@
     (not credential-present?) :needs-credential
     (not registered?) :not-implemented
     (not implemented?) :not-implemented
+    (and catalog-required? (= :credential-rejected catalog-reachability))
+    :credential-rejected
     (and catalog-required? (= :temporarily-unreachable catalog-reachability))
     :temporarily-unreachable
     (and catalog-required? (not served?)) :unavailable-to-account
@@ -176,6 +187,131 @@
   ;; that exist only because a snapshot id got split apart.
   #".*-\d{4}-\d{2}-\d{2}$")
 
+(def catalog-contracts
+  "How ONE configured endpoint's model list is read, and on whose authority.
+
+   Two endpoints speaking the same wire protocol do not have the same
+   documented contract, and flattening that away is how an undocumented
+   compatibility extension ends up cited as a vendor promise.
+
+   `:openai-models-api` is OpenAI's documented List models operation:
+   `GET /v1/models`, answering `{\"object\": \"list\", \"data\": [{\"id\": ...}]}`,
+   with no pagination.
+
+   `:fireworks-inference-models-list` is that same shape OBSERVED at Fireworks'
+   documented inference base, `https://api.fireworks.ai/inference/v1/models`.
+   Fireworks' OpenAI-compatibility page documents completions and chat
+   completions; it documents no models list, so this is observed behavior and
+   not a promised contract. What it answers is the set of ids this credential
+   can address for inference — on 2026-08-27, 24 ids: 20 serverless models plus
+   4 `accounts/fireworks/routers/...` ids.
+
+   Fireworks' documented NATIVE list operation is a different API answering a
+   different question. `GET /v1/accounts/{account_id}/models` answers
+   `{\"models\": [{\"name\": ..., \"supportsServerless\": ...}], \"nextPageToken\": ...}`:
+   entries are named by `name`, not `id`; it pages at 200 rows (300 rows under
+   `accounts/fireworks` on 2026-08-27); and it enumerates a vendor account's
+   whole collection rather than what this key may call. Its documented
+   `filter=supports_serverless=true` narrows that to the 20 serverless models —
+   a strict subset of the inference base's answer, still not scoped to this
+   credential, and still missing the router ids. So it is NOT the source this
+   picker reads, and nothing here may be documented as if it were.
+
+   `:openai-compatible-models-list` covers an operator-supplied
+   `OPENAI_BASE_URL`. Whoever set that variable asserted protocol
+   compatibility; no vendor promised a models list there either.
+
+   `:documented?` records who stands behind the response, not whether it works.
+   Every contract is checked on each fetch and fails closed."
+  {:openai-models-api
+   {:path "/models"
+    :envelope :openai-models-list
+    :paginated? false
+    :documented? true
+    :documentation "https://platform.openai.com/docs/api-reference/models/list"}
+
+   :fireworks-inference-models-list
+   {:path "/models"
+    :envelope :openai-models-list
+    :paginated? false
+    :documented? false
+    :observed "2026-08-27: GET https://api.fireworks.ai/inference/v1/models"
+    :documentation "https://docs.fireworks.ai/tools-sdks/openai-compatibility"
+    :native-alternative "https://docs.fireworks.ai/api-reference/list-models"}
+
+   :openai-compatible-models-list
+   {:path "/models"
+    :envelope :openai-models-list
+    :paginated? false
+    :documented? false}})
+
+(def ^:private continuation-keys
+  "Keys with which a paging answer says \"there is more\".
+
+   None of the three contracts above pages, so any of these is a contract
+   change — and a TRUNCATED list is worse than no list at all: every id below
+   the cut would be reported `:unavailable-to-account`, a permanent-sounding
+   verdict, on evidence that is merely incomplete."
+  [:has_more :next_page :next_page_token :nextPageToken :page_token])
+
+(defn- continuation-marker
+  "The continuation key present in `body`, or nil. `false` and an empty string
+   are how these fields say \"no more pages\"."
+  [body]
+  (some (fn [k]
+          (let [v (get body k)]
+            (when (and v (not (and (string? v) (str/blank? v)))) k)))
+        continuation-keys))
+
+(defn- openai-models-list-ids
+  "Ids from an OpenAI Models-API-shaped body, `{:data [{:id ...}]}`.
+
+   Unknown member fields are ignored by design — Fireworks adds `kind`,
+   `context_length` and `supports_*` to every entry — but a missing or
+   non-sequential `data` is refused rather than read as an empty account."
+  [body]
+  (when-not (map? body)
+    (throw (ex-info "Model list response is not a JSON object" {})))
+  (when-let [k (continuation-marker body)]
+    (throw (ex-info "Model list response is paginated; this contract is not"
+                    {:continuation-key k})))
+  (let [data (:data body)]
+    (when-not (sequential? data)
+      (throw (ex-info "Model list response has no data list" {})))
+    (->> data
+         (map :id)
+         (filter string?)
+         distinct
+         vec)))
+
+(defn- parse-catalog-body
+  "Model ids under ONE endpoint's contract.
+
+   Provider-specific by construction: there is no single \"OpenAI-compatible\"
+   parser here, only a parser per contract."
+  [catalog-contract body]
+  (case catalog-contract
+    :openai-models-api (openai-models-list-ids body)
+
+    :fireworks-inference-models-list
+    ;; Fireworks' native ListModels answers `{"models": [...], "nextPageToken":
+    ;; ...}` and carries no `data` at all. Naming that shape here keeps a
+    ;; reshaped or misrouted answer from being read as an account that serves
+    ;; nothing — which would disable every Fireworks row as
+    ;; `:unavailable-to-account`.
+    (do (when (and (map? body)
+                   (or (contains? body :models) (contains? body :nextPageToken)))
+          (throw (ex-info "Fireworks answered the native ListModels schema at the compatible path"
+                          {:contract catalog-contract})))
+        (openai-models-list-ids body))
+
+    :openai-compatible-models-list (openai-models-list-ids body)
+
+    ;; An endpoint configured with no contract is a bug here, not a provider
+    ;; fault. Say that in the log instead of quietly answering "no models".
+    (throw (ex-info "Endpoint has no model-list contract"
+                    {:contract catalog-contract}))))
+
 (defn- normalize-base-url [base]
   (str/replace (str base) #"/+$" ""))
 
@@ -188,8 +324,10 @@
    borrowed across providers.
 
    `:endpoint-kind` distinguishes native OpenAI from OpenAI-compatible request
-   behavior. The credential itself is intentionally private to this fetch
-   boundary and is never copied into catalog results or cache state."
+   behavior; `:catalog-contract` names which model-list contract this endpoint
+   answers under (see `catalog-contracts`). The credential itself is
+   intentionally private to this fetch boundary and is never copied into
+   catalog results or cache state."
   []
   (let [openai-key (*env-lookup* "OPENAI_API_KEY")
         fireworks-key (*env-lookup* "FIREWORKS_API_KEY")
@@ -201,6 +339,7 @@
              :credential-source "FIREWORKS_API_KEY"
              :endpoint-kind :openai-compatible
              :native-openai? false
+             :catalog-contract :fireworks-inference-models-list
              :credential fireworks-key})
 
       (seq openai-key)
@@ -213,10 +352,14 @@
                               :openai-compatible
                               :openai-native)
              :native-openai? (not (seq custom-openai-base))
+             :catalog-contract (if (seq custom-openai-base)
+                                 :openai-compatible-models-list
+                                 :openai-models-api)
              :credential openai-key}))))
 
 (def ^:private public-endpoint-keys
-  [:provider :base-url :credential-source :endpoint-kind :native-openai?])
+  [:provider :base-url :credential-source :endpoint-kind :native-openai?
+   :catalog-contract])
 
 (defn- public-endpoint [endpoint]
   (select-keys endpoint public-endpoint-keys))
@@ -249,54 +392,80 @@
          :reachable? (= :reachable reachability)))
 
 (defn- fetch-endpoint!
-  "Model ids one OpenAI-compatible endpoint serves, or nil when it cannot be
-   reached or does not return the documented `{:data [{:id ...}]}` shape."
-  [{:keys [base-url credential] :as endpoint}]
-  (try
-    (let [resp ((requiring-resolve 'babashka.http-client/get)
-                (str base-url "/models")
-                {:headers {"Authorization" (str "Bearer " credential)}
-                 :timeout 10000})
-          body ((requiring-resolve 'jsonista.core/read-value)
-                (:body resp)
-                ((requiring-resolve 'jsonista.core/object-mapper) {:decode-key-fn true}))
-          data (:data body)]
-      (when-not (<= 200 (:status resp) 299)
-        (throw (ex-info "Model endpoint returned a non-success status"
-                        {:status (:status resp)})))
-      (when-not (sequential? data)
-        (throw (ex-info "Model endpoint response has no data list" {})))
-      (->> data
-           (map :id)
-           (remove nil?)
-           (remove #(re-matches snapshot-id-re %))
-           distinct
-           vec))
-    (catch Throwable t
-      (log/log! {:level :warn :id ::catalog-fetch-failed
-                 :data {:provider (:provider endpoint)
-                        :base-url base-url
-                        :credential-source (:credential-source endpoint)
-                        :error (ex-message t)}})
-      nil)))
+  "The model ids one endpoint currently serves, under that endpoint's contract.
+
+   Answers `{:outcome :reachable :model-ids [...]}`, or an outcome that says
+   why there are none. A REJECTED credential is reported apart from an outage:
+   a key the provider refuses is a permanent, actionable configuration fault,
+   and calling it \"could not be refreshed\" sends an operator to wait for a
+   recovery that cannot arrive. Neither failure ever produces ids, so no
+   failure — and no malformed, truncated, or foreign-schema body — can be read
+   as availability."
+  [{:keys [base-url credential catalog-contract] :as endpoint}]
+  (let [{:keys [path]} (get catalog-contracts catalog-contract)]
+    (try
+      (let [resp ((requiring-resolve 'babashka.http-client/get)
+                  (str base-url path)
+                  {:headers {"Authorization" (str "Bearer " credential)}
+                   :timeout 10000
+                   ;; Classify the status here rather than letting the client
+                   ;; throw: 401 and 403 have to survive as themselves.
+                   :throw false})
+            status (:status resp)]
+        (cond
+          (contains? #{401 403} status)
+          (do (log/log! {:level :warn :id ::catalog-credential-rejected
+                         :msg "Provider refused the configured credential"
+                         :data {:provider (:provider endpoint)
+                                :base-url base-url
+                                :credential-source (:credential-source endpoint)
+                                :catalog-contract catalog-contract
+                                :status status}})
+              {:outcome :credential-rejected})
+
+          (not (<= 200 status 299))
+          (throw (ex-info "Model endpoint returned a non-success status"
+                          {:status status}))
+
+          :else
+          (let [body ((requiring-resolve 'jsonista.core/read-value)
+                      (:body resp)
+                      ((requiring-resolve 'jsonista.core/object-mapper)
+                       {:decode-key-fn true}))]
+            {:outcome :reachable
+             :model-ids (->> (parse-catalog-body catalog-contract body)
+                             (remove #(re-matches snapshot-id-re %))
+                             vec)})))
+      (catch Throwable t
+        (log/log! {:level :warn :id ::catalog-fetch-failed
+                   :data {:provider (:provider endpoint)
+                          :base-url base-url
+                          :credential-source (:credential-source endpoint)
+                          :catalog-contract catalog-contract
+                          :error (ex-message t)}})
+        {:outcome :unreachable}))))
 
 (defn- refresh-endpoint
   "Refresh one provider without disturbing any other provider's state.
 
-   A failed fetch retains only that exact endpoint's last-known ids and marks
-   them unreachable. With no last-known-good state it returns no model records;
-   a configured key or a code default is not evidence of availability."
+   A failed fetch retains only that exact endpoint's last-known ids, marks them
+   unreachable, and keeps the reachability that names the failure. With no
+   last-known-good state it returns no model records; a configured key or a
+   code default is not evidence of availability."
   [endpoint previous]
-  (if-some [ids (fetch-endpoint! endpoint)]
-    {:endpoint (public-endpoint endpoint)
-     :reachability :reachable
-     :last-success-at (System/currentTimeMillis)
-     :models (mapv #(model-record endpoint % :reachable) ids)}
-    {:endpoint (public-endpoint endpoint)
-     :reachability :temporarily-unreachable
-     :last-success-at (:last-success-at previous)
-     :models (mapv #(assoc % :reachability :unreachable :reachable? false)
-                   (:models previous))}))
+  (let [{:keys [outcome model-ids]} (fetch-endpoint! endpoint)]
+    (if (= :reachable outcome)
+      {:endpoint (public-endpoint endpoint)
+       :reachability :reachable
+       :last-success-at (System/currentTimeMillis)
+       :models (mapv #(model-record endpoint % :reachable) model-ids)}
+      {:endpoint (public-endpoint endpoint)
+       :reachability (if (= :credential-rejected outcome)
+                       :credential-rejected
+                       :temporarily-unreachable)
+       :last-success-at (:last-success-at previous)
+       :models (mapv #(assoc % :reachability :unreachable :reachable? false)
+                     (:models previous))})))
 
 (defn- catalog-records [cache]
   (->> (:endpoints cache)
@@ -311,7 +480,7 @@
   (reset! catalog-cache {:at 0 :configuration [] :endpoints {}}))
 
 (defn catalog
-  "Provider-aware model records from configured `/models` endpoints.
+  "Provider-aware model records from each endpoint's own model-list contract.
 
    Successful records are reachable now. Failed providers retain their own
    last-known ids as `:reachability :unreachable`; consumers deciding what is
@@ -348,8 +517,9 @@
   "Current fetch state and last-known served ids for one catalog provider.
 
    A transient failure leaves `:served-model-ids` intact and changes only
-   `:reachability`; an initial failure has an empty last-known set. Missing
-   credentials are configuration, not a failed fetch."
+   `:reachability`; an initial failure has an empty last-known set. A missing
+   credential is configuration, not a failed fetch; a REJECTED credential is
+   neither, and reports `:credential-rejected`."
   [provider]
   (let [provider (keyword provider)
         contract (provider-contract provider)]
@@ -394,11 +564,14 @@
 (defn model-availability
   "Authoritative availability result for an exact provider/model pair.
 
-   Registry metadata is never synthesized from `/models`. A served unknown id
-   is therefore `:not-implemented`/`:registry-missing`; a registered id absent
-   from a successful account catalog is `:unavailable-to-account`; and a fetch
+   Registry metadata is never synthesized from a model list. A served unknown
+   id is therefore `:not-implemented`/`:registry-missing`; a registered id
+   absent from a SUCCESSFUL account list is `:unavailable-to-account`; a fetch
    failure retains the last-known served set while reporting
-   `:temporarily-unreachable`."
+   `:temporarily-unreachable`; and a refused credential reports
+   `:credential-rejected`. Only a successful, complete, contract-shaped
+   response can make a candidate absent — evidence that is missing or partial
+   never becomes a verdict about the account."
   ([model-id]
    (model-availability (infer-provider model-id) model-id))
   ([provider model-id]

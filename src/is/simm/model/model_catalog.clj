@@ -140,7 +140,7 @@
                      (= id (:model-id %)))
             (select-keys % [:base-url :credential-source :reachability
                             :reachable? :model-id :endpoint-kind
-                            :native-openai?]))
+                            :native-openai? :catalog-contract]))
          (ms/catalog))))
 
 (defn reasoning-disabled-for-tools?
@@ -239,6 +239,15 @@
      :availability-explanation
      (str (provider-label provider) " does not make this model available to this account.")}
 
+    :credential-rejected
+    ;; NOT an outage. The provider answered, and refused the key. Waiting fixes
+    ;; nothing; replacing the key does. The two used to share one sentence,
+    ;; which told an operator with a revoked key to wait for a refresh.
+    {:availability-label "Credential rejected"
+     :availability-explanation
+     (str (provider-label provider) " rejected " (or credential-source "the API key")
+          ". Set a valid key in the server environment, then restart simmis.")}
+
     :temporarily-unreachable
     {:availability-label "Temporarily unreachable"
      :availability-explanation
@@ -246,7 +255,7 @@
           " model availability could not be refreshed. Last-known status is retained, "
           "but this choice cannot be used until the provider responds.")}
 
-    ;; Total by construction. The five states above are everything
+    ;; Total by construction. The six states above are everything
     ;; `model-selection/availability-state` produces, but this function also
     ;; renders results that were computed elsewhere. A `case` without this
     ;; clause threw out of the whole room-details response rather than showing

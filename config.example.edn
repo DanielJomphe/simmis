@@ -69,7 +69,10 @@
 ;;                       picks its own model, and the provider follows from it.
 ;;                       Keys are provider-scoped: OpenAI never supplies a
 ;;                       Fireworks credential, or vice versa. Restart after
-;;                       adding or changing a provider credential.
+;;                       adding or changing a provider credential. A key the
+;;                       provider REJECTS reads as "Credential rejected" on the
+;;                       affected rows: that is a key to replace, not an outage
+;;                       to wait out.
 ;;
 ;;   OPENAI_BASE_URL     Where OPENAI_API_KEY points. UNSET means OpenAI itself
 ;;                       (https://api.openai.com/v1) — the gpt-5.6 / gpt-5.5

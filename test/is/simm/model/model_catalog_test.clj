@@ -89,11 +89,28 @@
 
 (deftest availability-copy-renders-every-state-including-an-unknown-one
   (doseq [state [:available :needs-credential :not-implemented
-                 :unavailable-to-account :temporarily-unreachable]]
+                 :unavailable-to-account :temporarily-unreachable
+                 :credential-rejected]]
     (testing state
       (let [copy (catalog/availability-copy "openai" {:state state})]
         (is (string? (:availability-label copy)))
         (is (string? (:availability-explanation copy))))))
+  (testing "an outage keeps its own wording: wait, do not reconfigure"
+    (let [copy (catalog/availability-copy
+                "fireworks" {:state :temporarily-unreachable})]
+      (is (= "Temporarily unreachable" (:availability-label copy)))
+      (is (= (str "Fireworks model availability could not be refreshed. "
+                  "Last-known status is retained, but this choice cannot be "
+                  "used until the provider responds.")
+             (:availability-explanation copy)))))
+  (testing "a refused credential names the key to replace, not a wait"
+    (let [copy (catalog/availability-copy
+                "fireworks" {:state :credential-rejected
+                             :credential-source "FIREWORKS_API_KEY"})]
+      (is (= "Credential rejected" (:availability-label copy)))
+      (is (= (str "Fireworks rejected FIREWORKS_API_KEY. Set a valid key in "
+                  "the server environment, then restart simmis.")
+             (:availability-explanation copy)))))
   (testing "a selection that resolved to no candidate still renders"
     (is (= {:availability-label "Unavailable"
             :availability-explanation
@@ -302,3 +319,53 @@
                        (get by-provider "openai")))
            (is (every? #(= "FIREWORKS_API_KEY" (:credential-source %))
                        (get by-provider "fireworks")))))))))
+
+(deftest a-refused-fireworks-key-reads-as-a-key-problem-not-an-outage
+  ;; End of the chain: credential → Fireworks' observed compatible model list →
+  ;; a 401 → the row a person actually reads. Every failure used to arrive here
+  ;; as "Temporarily unreachable", which asks the operator to wait.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (catalog/choices)
+         (fake/reject-credential! fixture "/fireworks/models" fireworks-key)
+         (selection/reset-catalog!)
+         (let [latest (row (catalog/choices) "accounts/fireworks/models/glm-*")]
+           (is (= :credential-rejected (:availability latest)))
+           (is (false? (:available? latest)))
+           (is (true? (:disabled? latest)))
+           (is (= "Credential rejected" (:availability-label latest)))
+           (is (str/includes? (:availability-explanation latest)
+                              "FIREWORKS_API_KEY"))
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (catalog/require-available-choice!
+                         "accounts/fireworks/models/glm-*")))))))))
+
+(deftest a-fireworks-outage-keeps-the-outage-row-and-its-copy
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (catalog/choices)
+         (fake/outage! fixture "/fireworks/models" fireworks-key)
+         (selection/reset-catalog!)
+         (let [latest (row (catalog/choices) "accounts/fireworks/models/glm-*")]
+           (is (= :temporarily-unreachable (:availability latest)))
+           (is (false? (:available? latest)))
+           (is (= "Temporarily unreachable" (:availability-label latest)))
+           (is (= fireworks-model (:resolves latest))
+               "the Latest row still names the newest version this build runs")))))))
+
+(deftest a-picker-row-records-the-contract-its-evidence-came-from
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key [fireworks-model])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (let [latest (row (catalog/choices) "accounts/fireworks/models/glm-*")]
+           (is (= :fireworks-inference-models-list (:catalog-contract latest)))
+           (is (= :openai-compatible (:endpoint-kind latest)))
+           (is (false? (:native-openai? latest)))))))))

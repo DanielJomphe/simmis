@@ -119,16 +119,40 @@ resolved version separately, and explains whether a newer family version is in
 use or no valid forward candidate exists.
 
 The concrete id is resolved when the participant is joined or rejoined. For
-catalog-backed providers, `/models`
-answers which model ids that credential can currently reach
-(`is.simm.model.model-selection`). It does not supply pricing,
+catalog-backed providers, a model list answers which ids that credential can
+currently reach (`is.simm.model.model-selection`). It does not supply pricing,
 context limits or capability metadata. Each returned id retains its provider,
-base URL, credential source and reachability; identical URLs therefore remain
-two records. If one fetch fails, only that provider's last-known ids survive and
-the curated rows remain visible as `:temporarily-unreachable`. The picker and
-resolver share five states: `:available`, `:needs-credential`,
-`:not-implemented` (including a registry gap), `:unavailable-to-account`, and
-`:temporarily-unreachable`. Only an `:available` picker row may be newly saved,
+base URL, credential source, reachability, and the CONTRACT its evidence came
+from; identical URLs therefore remain two records.
+
+That contract is per endpoint, not per protocol, and `catalog-contracts` says
+whose promise each one is:
+
+| Contract | Request | Authority |
+|---|---|---|
+| `:openai-models-api` | `GET https://api.openai.com/v1/models` | documented by OpenAI |
+| `:fireworks-inference-models-list` | `GET https://api.fireworks.ai/inference/v1/models` | OBSERVED on Fireworks' documented inference base; Fireworks documents completions and chat completions there, not a models list |
+| `:openai-compatible-models-list` | `GET <OPENAI_BASE_URL>/models` | asserted by whoever set the variable |
+
+All three answer `{"object": "list", "data": [{"id": ...}]}` and none of them
+pages. Fireworks' documented NATIVE list operation is a different API answering
+a different question — `GET /v1/accounts/{account_id}/models` returns
+`{"models": [{"name": ..., "supportsServerless": ...}], "nextPageToken": ...}`,
+pages at 200 rows, and enumerates a vendor account's whole collection rather
+than what this key can call. simmis does not read it, and a body in that shape
+arriving at the compatible path is refused rather than read as an account that
+serves nothing.
+
+A fetch counts only when it succeeds, parses, and is complete. A missing `data`
+list, a foreign schema, or a page marker leaves the last-known ids in place and
+reports a failure, because incomplete evidence must never harden into a verdict
+about the account. If one fetch fails, only that provider's last-known ids
+survive and the curated rows remain visible as `:temporarily-unreachable`. A
+provider that ANSWERS and refuses the key is separated out: waiting fixes an
+outage, and only a new key fixes a rejection. The picker and resolver share six
+states: `:available`, `:needs-credential`, `:not-implemented` (including a
+registry gap), `:unavailable-to-account`, `:temporarily-unreachable`, and
+`:credential-rejected`. Only an `:available` picker row may be newly saved,
 and only an available resolved target may execute. Saving an owner preference
 or agent override recomputes the row's availability on the server. Clearing an
 override validates the inherited preference through the same soft resolver, so
@@ -137,8 +161,8 @@ preference. An unavailable explicit or inherited choice never falls through to
 the default, a different family, or another provider.
 
 A model must also exist in dvergr's registry, which is where its context window,
-capabilities and price per token come from. `/models` never adds to that
-registry: a served but unregistered id is shown as “Not supported,” while a
+capabilities and price per token come from. A model list never adds to that
+registry: a listed but unregistered id is shown as “Not supported,” while a
 registered id absent from a successful provider response is unavailable to that
 account. `:auto` selects the newest usable version inside its exact family;
 preferred-version fallback uses the same candidate set but accepts only

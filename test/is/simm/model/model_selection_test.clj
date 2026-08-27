@@ -79,6 +79,12 @@
                ["transient catalog failure"
                 {:catalog-reachability :temporarily-unreachable}
                 :temporarily-unreachable]
+               ["provider refused the credential"
+                {:catalog-reachability :credential-rejected}
+                :credential-rejected]
+               ["a refused credential outranks last-known served evidence"
+                {:catalog-reachability :credential-rejected :served? false}
+                :credential-rejected]
                ["provider without a catalog endpoint"
                 {:catalog-required? false
                  :catalog-reachability :not-required
@@ -426,3 +432,171 @@
          (selection/reset-catalog!)
          (is (= [] (selection/catalog true))
              "an outage with no last-known-good state invents no model"))))))
+
+;; ---------------------------------------------------------------------------
+;; Catalog contract — each endpoint is read under its own, named contract
+;; ---------------------------------------------------------------------------
+
+(deftest each-endpoint-declares-the-contract-it-is-read-under
+  ;; Fireworks and OpenAI both answer an OpenAI-shaped model list, and only one
+  ;; of them documents it. The record has to say which, so no reader concludes
+  ;; that "OpenAI-compatible" implies OpenAI's Models API.
+  (fake/with-server
+   (fn [{:keys [base-url] :as fixture}]
+     (fake/respond! fixture "/openai/models" openai-key ["gpt-5.6-luna"])
+     (fake/respond! fixture "/fireworks/models" fireworks-key
+                    ["accounts/fireworks/models/glm-5p2"])
+     (with-config fixture {"OPENAI_API_KEY" openai-key
+                           "FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (let [records (by-provider (selection/catalog true))]
+           (is (= :openai-models-api (:catalog-contract (:openai records))))
+           (is (= :fireworks-inference-models-list
+                  (:catalog-contract (:fireworks records)))))))
+     (with-config fixture {"OPENAI_API_KEY" openai-key
+                           "OPENAI_BASE_URL" (str base-url "/compatible")}
+       (fn []
+         (fake/respond! fixture "/compatible/models" openai-key ["gpt-5.5"])
+         (is (= :openai-compatible-models-list
+                (:catalog-contract (first (selection/catalog true))))))))))
+
+(deftest the-documented-and-observed-contracts-are-labelled-as-such
+  (is (true? (:documented? (:openai-models-api selection/catalog-contracts))))
+  (is (false? (:documented?
+               (:fireworks-inference-models-list selection/catalog-contracts)))
+      "Fireworks documents completions and chat completions on the inference
+       base, not a models list")
+  (is (false? (:documented?
+               (:openai-compatible-models-list selection/catalog-contracts))))
+  (is (every? #(false? (:paginated? %)) (vals selection/catalog-contracts))
+      "no contract this code reads pages; a page marker is a contract change"))
+
+(deftest a-fireworks-answer-carries-provider-specific-member-fields
+  ;; The observed Fireworks entries carry kind, context_length and supports_*
+  ;; beside the id. Extra members are data, not a malformed response.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond-with!
+      fixture "/fireworks/models" fireworks-key 200
+      {:object "list"
+       :data [{:id "accounts/fireworks/models/glm-5p2"
+               :object "model"
+               :owned_by "fireworks"
+               :kind "HF_BASE_MODEL"
+               :context_length 1048576
+               :supports_chat true
+               :supports_tools true}
+              {:id "accounts/fireworks/routers/glm-5p2-fast"
+               :object "model"
+               :owned_by "fireworks"}]})
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (is (= ["accounts/fireworks/models/glm-5p2"
+                 "accounts/fireworks/routers/glm-5p2-fast"]
+                (mapv :model-id (selection/catalog true))))
+         (is (true? (:available?
+                     (selection/model-availability
+                      :fireworks "accounts/fireworks/models/glm-5p2")))))))))
+
+(deftest the-native-fireworks-schema-is-not-read-as-an-empty-account
+  ;; `{"models": [...], "nextPageToken": ...}` is Fireworks' NATIVE
+  ;; /v1/accounts/{id}/models answer. Read as a compatible body it has no
+  ;; `data`, and treating that as "this account serves nothing" would disable
+  ;; every Fireworks row with a permanent-sounding verdict.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key
+                    ["accounts/fireworks/models/glm-5p2"])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (selection/catalog true)
+         (fake/respond-with!
+          fixture "/fireworks/models" fireworks-key 200
+          {:models [{:name "accounts/fireworks/models/glm-5p2"
+                     :supportsServerless true}]
+           :nextPageToken "cD0y"
+           :totalSize 300})
+         (let [record (first (selection/catalog true))
+               availability (selection/model-availability
+                             :fireworks "accounts/fireworks/models/glm-5p2")]
+           (is (= "accounts/fireworks/models/glm-5p2" (:model-id record))
+               "the last-known id is retained, not replaced by a name field")
+           (is (= :unreachable (:reachability record)))
+           (is (= :temporarily-unreachable (:state availability)))
+           (is (false? (:available? availability)))))))))
+
+(deftest a-page-marker-fails-closed-instead-of-truncating-the-account
+  ;; A partial list would report every id below the cut as
+  ;; :unavailable-to-account — a permanent verdict on incomplete evidence.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond-with!
+      fixture "/fireworks/models" fireworks-key 200
+      {:object "list"
+       :data [{:id "accounts/fireworks/models/glm-5p2"}]
+       :has_more true})
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (is (= [] (selection/catalog true)))
+         (is (= :temporarily-unreachable
+                (:state (selection/model-availability
+                         :fireworks "accounts/fireworks/models/glm-5p2")))))))))
+
+(deftest a-malformed-body-is-not-an-empty-account
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key
+                    ["accounts/fireworks/models/glm-5p2"])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (selection/catalog true)
+         (fake/respond-with! fixture "/fireworks/models" fireworks-key 200
+                             {:object "list" :data "not-a-list"})
+         (selection/catalog true)
+         (let [availability (selection/model-availability
+                             :fireworks "accounts/fireworks/models/glm-5p2")]
+           (is (= :temporarily-unreachable (:state availability)))
+           (is (false? (:available? availability)))
+           (is (= #{"accounts/fireworks/models/glm-5p2"}
+                  (:served-model-ids
+                   (selection/provider-catalog-status :fireworks)))
+               "last-known evidence survives a malformed refresh")))))))
+
+(deftest a-rejected-credential-is-not-an-outage
+  ;; 401/403 is the provider answering: this key will not work until it is
+  ;; replaced. Reported as an outage, it told an operator to wait instead.
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key
+                    ["accounts/fireworks/models/glm-5p2"])
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (selection/catalog true)
+         (fake/reject-credential! fixture "/fireworks/models" fireworks-key)
+         (selection/catalog true)
+         (let [status (selection/provider-catalog-status :fireworks)
+               availability (selection/model-availability
+                             :fireworks "accounts/fireworks/models/glm-5p2")]
+           (is (= :credential-rejected (:reachability status)))
+           (is (= :credential-rejected (:state availability)))
+           (is (false? (:available? availability)))
+           (is (= [] (selection/available-catalog)))
+           (is (nil? (selection/resolve-model
+                      {:provider :fireworks
+                       :model "accounts/fireworks/models/glm-5p2"})))))))))
+
+(deftest a-rejected-credential-on-one-provider-leaves-the-other-alone
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/openai/models" openai-key ["gpt-5.6-luna"])
+     (fake/reject-credential! fixture "/fireworks/models" fireworks-key)
+     (with-config fixture {"OPENAI_API_KEY" openai-key
+                           "FIREWORKS_API_KEY" fireworks-key}
+       (fn []
+         (selection/catalog true)
+         (is (= :reachable
+                (:reachability (selection/provider-catalog-status :openai))))
+         (is (= :credential-rejected
+                (:reachability (selection/provider-catalog-status :fireworks))))
+         (is (= ["gpt-5.6-luna"]
+                (mapv :model-id (selection/available-catalog)))))))))
