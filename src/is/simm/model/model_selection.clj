@@ -399,6 +399,14 @@
    either spelling and invents nothing — the alias is a pointer to that exact
    snapshot the account was just observed to serve.
 
+   This is load-bearing, not defensive. Observed 2026-08-27 against a real
+   account: `GET /v1/models` answered 10 ids, and every pre-4.6-generation model
+   appeared ONLY in pinned form — `claude-opus-4-5-20251101`,
+   `claude-haiku-4-5-20251001`, `claude-sonnet-4-5-20250929`, with no dateless
+   spelling anywhere in the response. Those are exactly the three ids dvergr's
+   registry carries dateless. With this mapping removed, all three report
+   `:unavailable-to-account` on an account that plainly serves them.
+
    <https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions>"
   [model-id]
   (second (re-matches anthropic-snapshot-id-re (str model-id))))
