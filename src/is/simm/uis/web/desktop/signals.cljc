@@ -21,6 +21,7 @@
      (swap! nav-collapsed-projects conj project-id)"
   (:require [is.simm.uis.web.desktop.db-signal :as db]
             [is.simm.uis.web.desktop.room-actions :as room-actions]
+            [is.simm.uis.web.desktop.tab-heal :as tab-heal]
             #?(:cljs [is.simm.uis.web.desktop.datahike-query :as dq])
             #?(:cljs [org.replikativ.spindel.signal :refer [->SignalRef]])
             #?(:cljs [org.replikativ.spindel.engine.core :as rtc])
@@ -788,57 +789,78 @@
                                room-uuid)]
              (swap! chat-scroll-windows assoc context-key :end))))
 
-       (cond
-         ;; Create new column with this tab
-         new-column?
-         (let [new-col-id (gen-id)
-               new-tab {:id (gen-id)
-                        :type tab-type
-                        :title (or title (name tab-type))
-                        :data tab-data}]
-           (swap! layout-columns
-                  (fn [cols]
-                    (let [new-width (/ 1.0 (inc (count cols)))
-                          adjusted (mapv #(assoc % :width new-width) cols)]
-                      (conj adjusted {:id new-col-id
-                                      :width new-width
-                                      :tabs [new-tab]
-                                      :active-tab (:id new-tab)}))))
-           ;; New column becomes active
-           (set-active-column! new-col-id))
+       ;; RECONCILE AT BIRTH. Every tab in this app is born here, so this is
+       ;; the one place that can hold the invariant for the roster-first
+       ;; order: when the roster is already loaded, a new chat tab resolves
+       ;; its room — or is marked `:room-missing?` — before it is ever
+       ;; rendered. `user-rooms-sync` holds the other order, reconciling open
+       ;; tabs when the roster lands. Same rules (`tab-heal`), either order.
+       ;;
+       ;; Reconciling here rather than in `refs/ref->tab` is deliberate: refs
+       ;; are one of a dozen callers, and the ones that resolve a scope by
+       ;; hand (the nav tree, the wiki backlink, agent-inspector) are exactly
+       ;; the ones that can hand us a stale room and no verdict about it.
+       ;;
+       ;; It cannot loop: the input is a tab map this call just built, the
+       ;; roster is only READ, and `heal-chat-tab` is idempotent — so nothing
+       ;; here can provoke another `open-tab!`, another roster fetch, or a
+       ;; second layout write.
+       (let [reconcile #(tab-heal/reconcile-tab % @user-rooms)
+             mk-tab    (fn [] (reconcile {:id (gen-id)
+                                          :type tab-type
+                                          :title (or title (name tab-type))
+                                          :data tab-data}))]
+         (cond
+           ;; Create new column with this tab
+           new-column?
+           (let [new-col-id (gen-id)
+                 new-tab (mk-tab)]
+             (swap! layout-columns
+                    (fn [cols]
+                      (let [new-width (/ 1.0 (inc (count cols)))
+                            adjusted (mapv #(assoc % :width new-width) cols)]
+                        (conj adjusted {:id new-col-id
+                                        :width new-width
+                                        :tabs [new-tab]
+                                        :active-tab (:id new-tab)}))))
+             ;; New column becomes active
+             (set-active-column! new-col-id))
 
-         ;; Create new tab in existing column (use active column if no col-id)
-         new-tab?
-         (let [new-tab {:id (gen-id)
-                        :type tab-type
-                        :title (or title (name tab-type))
-                        :data tab-data}
-               cols @layout-columns
-               target-col-id (or col-id (get-active-column-id cols))]
-           (swap! layout-columns
-                  room-actions/add-tab-to-column target-col-id new-tab))
+           ;; Create new tab in existing column (use active column if no col-id)
+           new-tab?
+           (let [new-tab (mk-tab)
+                 cols @layout-columns
+                 target-col-id (or col-id (get-active-column-id cols))]
+             (swap! layout-columns
+                    room-actions/add-tab-to-column target-col-id new-tab))
 
-         ;; Default: Navigate in current tab (replace active tab content)
-         ;; Uses active column if no col-id specified
-         :else
-         (let [cols @layout-columns
-               target-col-id (or col-id (get-active-column-id cols))]
-           (swap! layout-columns
-                  (fn [cols]
-                    (let [target-idx (or (find-column-index cols target-col-id) 0)]
-                      (update-in cols [target-idx]
-                                 (fn [col]
-                                   (let [active-id (:active-tab col)]
-                                     (update col :tabs
-                                             (fn [tabs]
-                                               (mapv (fn [tab]
-                                                       (if (= (:id tab) active-id)
-                                                         (assoc tab
-                                                                :type tab-type
-                                                                :title (or title (name tab-type))
-                                                                :data tab-data)
-                                                         tab))
-                                                     tabs)))))))))))
+           ;; Default: Navigate in current tab (replace active tab content)
+           ;; Uses active column if no col-id specified
+           :else
+           (let [cols @layout-columns
+                 target-col-id (or col-id (get-active-column-id cols))]
+             (swap! layout-columns
+                    (fn [cols]
+                      (let [target-idx (or (find-column-index cols target-col-id) 0)]
+                        (update-in cols [target-idx]
+                                   (fn [col]
+                                     (let [active-id (:active-tab col)]
+                                       (update col :tabs
+                                               (fn [tabs]
+                                                 ;; Navigating in place REPLACES
+                                                 ;; the tab's type and data, so
+                                                 ;; the result is a new tab in
+                                                 ;; every sense but its id — and
+                                                 ;; needs the same verdict.
+                                                 (mapv (fn [tab]
+                                                         (if (= (:id tab) active-id)
+                                                           (reconcile
+                                                             (assoc tab
+                                                                    :type tab-type
+                                                                    :title (or title (name tab-type))
+                                                                    :data tab-data))
+                                                           tab))
+                                                       tabs))))))))))))
        (refresh-active-nav-keys!)
        (notify-focus-change! :navigate))
      :clj nil))

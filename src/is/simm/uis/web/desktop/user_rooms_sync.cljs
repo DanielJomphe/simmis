@@ -34,13 +34,19 @@
            ;; Route restoration knows the room id, but deliberately does not
            ;; persist server-owned metadata such as its content DB scope. The
            ;; roster is where that metadata arrives, so the repair belongs here.
-           ;; `heal-chat-tabs` fills a chat or chat-thread tab's :db-scope and
-           ;; :room-name, or marks it :room-missing?. It subsumes the old
-           ;; placeholder-only swap: the boot layout's "personal-ai-placeholder"
-           ;; tab is simply the tab whose room is the personal-ai room.
-           (let [rooms (:rooms result)
-                 personal (first (filter #(= (:room/type %) :personal-ai) rooms))]
-             (swap! sig/layout-columns tab-heal/heal-chat-tabs rooms personal))))
+           ;; It subsumes the old placeholder-only swap: the boot layout's
+           ;; "personal-ai-placeholder" tab is simply the tab whose room is the
+           ;; personal-ai room.
+           ;;
+           ;; This is HALF the invariant — the half where the tab was already
+           ;; open. `sig/open-tab!` holds the other half, for a tab opened
+           ;; after the roster landed; both call into `tab-heal`, so a tab
+           ;; ends up resolved-or-missing regardless of which came first.
+           ;;
+           ;; `reconcile-layout` returns the layout unchanged when it changed
+           ;; nothing, so the refresh this subscription runs on every roster
+           ;; invalidation does not repaint every column for no new fact.
+           (swap! sig/layout-columns tab-heal/reconcile-layout result)))
        (fn [err] (js/console.error "[user-rooms-sync] load-rooms error:" err)))))
 
 (defonce ^:private subscribed? (atom false))

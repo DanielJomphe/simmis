@@ -10,8 +10,20 @@
    and a verdict that must be revocable), so they get a namespace that can be
    exercised without a DOM, a browser, or a running app.
 
-   `user-rooms-sync` owns the WHEN — it calls this every time the roster
-   lands. This owns the WHAT.")
+   This owns the WHAT. The WHEN is two moments, and it has to be both,
+   because the tab and the roster can arrive in either order:
+
+     - the roster lands while tabs are open — `user-rooms-sync` reconciles
+       the whole layout (`reconcile-layout`);
+     - a tab is opened while the roster is already loaded — `signals/open-tab!`
+       reconciles the one new tab (`reconcile-tab`).
+
+   Either moment alone leaves half the bug. Reconciling only on roster arrival
+   was the original fix, and it repairs a cold-boot deep link; it does nothing
+   for the far commoner case of clicking a stale link an hour into a session,
+   when the roster landed long ago and will not land again on its own. Both
+   moments run the SAME rules below, so the outcome does not depend on which
+   fact showed up first.")
 
 (defn heal-chat-tab
   "Reconcile one tab against `rooms`: fill in what the roster knows, or mark
@@ -63,3 +75,63 @@
           (update col :tabs
                   (fn [tabs] (mapv #(heal-chat-tab % rooms personal-room) tabs))))
         cols))
+
+;; -----------------------------------------------------------------------------
+;; The roster as a fact, and the two moments that apply it
+;; -----------------------------------------------------------------------------
+
+(defn roster-known?
+  "Has the roster ARRIVED? — which is not the same question as \"does it name
+   any rooms\".
+
+   `sig/user-rooms` is nil until `load-rooms!` answers, and the answer for a
+   party with no rooms is an EMPTY list, not nil. Conflating the two would make
+   every tab opened before the first roster read as `:room-missing?`, which is
+   the opposite error from the one being fixed: a verdict passed on no
+   evidence. A `load-rooms!` result is a map carrying `:rooms`; the roster
+   signal has historically also been read as a bare vector of rooms (see
+   `refs/room-scope`), so both shapes count as arrived."
+  [roster]
+  (boolean (or (and (map? roster) (contains? roster :rooms))
+               (vector? roster))))
+
+(defn roster-rooms
+  "The room list inside a roster, in either shape. Call only when
+   `roster-known?`."
+  [roster]
+  (if (map? roster) (vec (:rooms roster)) (vec roster)))
+
+(defn personal-room
+  "The party's personal-ai room, which the boot layout's placeholder tab names
+   without knowing its id."
+  [rooms]
+  (first (filter #(= :personal-ai (:room/type %)) rooms)))
+
+(defn reconcile-tab
+  "Apply the roster's verdict to ONE tab — the tab-opened-second half.
+
+   A no-op while the roster is unknown: the tab-opened-first half is then still
+   ahead of it, and `reconcile-layout` will run when the roster lands. That is
+   the whole order-independence argument — whichever fact is second triggers
+   the same rules."
+  [tab roster]
+  (if-not (roster-known? roster)
+    tab
+    (let [rooms (roster-rooms roster)]
+      (heal-chat-tab tab rooms (personal-room rooms)))))
+
+(defn reconcile-layout
+  "Apply the roster's verdict to every open tab — the roster-arrived-second
+   half.
+
+   Returns the ARGUMENT unchanged when nothing changed, identity included.
+   `heal-chat-tabs` rebuilds the vectors either way, and this runs on every
+   roster refresh — of which there is one per system-DB write that touches any
+   roster. Handing spindel a fresh-but-equal layout on each of those is a
+   re-render of every column for no new fact."
+  [cols roster]
+  (if-not (roster-known? roster)
+    cols
+    (let [rooms  (roster-rooms roster)
+          healed (heal-chat-tabs cols rooms (personal-room rooms))]
+      (if (= healed cols) cols healed))))

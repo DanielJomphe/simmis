@@ -1396,10 +1396,11 @@
              ;; Get the room's DB from room-states (nil while connecting)
              room-db (when room-db-scope (get-in room-states [(str room-db-scope) :db]))
 
-             ;; The roster's verdict on this tab (written by
-             ;; `user-rooms-sync/heal-chat-tab` when the roster arrives): this
-             ;; tab names no room this party can open. It is a CONCLUSION, so
-             ;; the render can act on it rather than waiting.
+             ;; The roster's verdict on this tab (written by `tab-heal`, from
+             ;; whichever of the two moments came second — the tab opening or
+             ;; the roster landing): this tab names no room this party can
+             ;; open. It is a CONCLUSION, so the render can act on it rather
+             ;; than waiting.
              room-missing? (:room-missing? data)
 
              ;; Ensure room chatroom + user entities exist in room DB (side effect)
