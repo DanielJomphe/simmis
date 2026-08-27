@@ -80,6 +80,20 @@
 (defn- notes [posted text]
   (remove #(= text (:content %)) posted))
 
+(defn- unexpected-ex []
+  ;; Deliberately shaped like an error we must never echo into a room.
+  (ex-info "postgres://operator:secret@example.test/rooms?token=leak"
+           {:provider :test-provider}))
+
+(defn- with-clean-join-cache [f]
+  (let [join-cache (var-get (room-agents-var 'joined))
+        before @join-cache]
+    (try
+      (reset! join-cache #{})
+      (f)
+      (finally
+        (reset! join-cache before)))))
+
 (deftest one-unavailable-agent-does-not-block-the-room
   (let [text "status please"
         {:keys [result posted joined signals]} (run-send text [var-vor sol])]
@@ -155,6 +169,135 @@
 
     (testing "every failure reaches the operator log too"
       (is (= 3 (count (filter #(= ::room-agents/agent-join-failed (:id %)) signals)))))))
+
+(deftest persistence-failure-before-context-is-isolated-and-safe
+  (let [text "keep going"
+        room-uuid (random-uuid)
+        room {:ctx nil :id :test-room}
+        posted (atom [])
+        healthy #{var-vor sol}
+        {:keys [value signals]}
+        (tel/with-signals
+          (with-redefs-fn
+            {(room-agents-var 'ensure-providers!) (constantly nil)
+             #'rooms/get-room-agents (constantly agents)
+             #'parties/get-party (constantly {:party/id sender :party/type :human})
+             #'room-agents/live-room (constantly room)
+             #'room-agents/ensure-room-projector! (constantly nil)
+             #'room-agents/ensure-room-party-entity!
+             (fn [_ party]
+               (when (= lun (:party/id party))
+                 (throw (unexpected-ex))))
+             #'room-agents/ensure-agent-joined!
+             (fn [_ _ agent _]
+               (is (contains? healthy (:party/id agent))))
+             #'d/room-target (constantly nil)
+             #'d/post! (fn [_ msg] (swap! posted conj msg) msg)}
+            (fn [] (room-agents/post-user-message! room-uuid text sender nil))))]
+    (testing "a storage exception before context creation does not abort the send"
+      (is (= :ok (:status value)))
+      (is (= #{var-vor sol} (set (:recipients value))))
+      (is (= [lun] (:join-errors value)))
+      (is (= 2 (count (user-messages @posted text)))))
+    (testing "the room note has no raw error, credential, URL, or internal class"
+      (let [note (:content (first (notes @posted text)))]
+        (is (str/includes? note "server-side fault"))
+        (is (not (str/includes? note "secret")))
+        (is (not (str/includes? note "postgres")))
+        (is (not (str/includes? note "token=")))
+        (is (not (str/includes? note "Exception")))))
+    (testing "the operator log keeps the unexpected failure distinct"
+      (let [event (first (filter #(= ::room-agents/agent-join-failed (:id %)) signals))]
+        (is (= :error (:level event)))
+        (is (= :join-error (get-in event [:data :failure-type])))
+        (is (some? (:error event)))))))
+
+(deftest failed-initialization-rolls-back-context-and-participant-before-retry
+  (with-clean-join-cache
+    (fn []
+      (let [room-uuid (random-uuid)
+            actor (room-agents/party->actor-kw lun)
+            room {:ctx nil :id :test-room :participants (atom {})}
+            ctx-present? (atom false)
+            dropped (atom [])
+            join-attempts (atom 0)
+            fail? (atom true)
+            agent (agent-party lun "Lun")
+            redefs {#'room-agents/describe-model-resolution
+                    (constantly {:model "test-model" :provider :test :available? true})
+                    (room-agents-var 'join-participant!)
+                    (fn [r _ _ _ _]
+                      (swap! join-attempts inc)
+                      (reset! ctx-present? true)       ; ctx + namespaces created
+                      (swap! (:participants r) assoc actor {:id actor}) ; d/join partly registered
+                      (when @fail? (throw (unexpected-ex))))
+                    (ns-resolve 'dvergr.agent.room-context 'lookup) (fn [& _] (when @ctx-present? :ctx))
+                    (ns-resolve 'dvergr.agent.room-context 'drop-ctx!) (fn [& _] (reset! ctx-present? false))
+                    #'d/leave (fn [r id] (swap! (:participants r) dissoc id) (swap! dropped conj id))}]
+        (with-redefs-fn redefs
+          (fn []
+            (testing "a fault after ctx creation and partial d/join is typed and undone"
+              (let [e (try
+                        (room-agents/ensure-agent-joined! room room-uuid agent nil)
+                        nil
+                        (catch Exception e e))]
+                (is (= :join-error (:type (ex-data e))))
+                (is (= #{:context :participant} (:rolled-back (ex-data e))))
+                (is (false? @ctx-present?))
+                (is (empty? @(:participants room)))))
+            (testing "retry starts clean and creates one participant"
+              (reset! fail? false)
+              (room-agents/ensure-agent-joined! room room-uuid agent nil)
+              (is (= 2 @join-attempts))
+              (is (= 1 (count @(:participants room))))
+              (is (= [actor] @dropped)))))))))
+
+(deftest real-discourse-and-projector-keep-the-send-and-healthy-reply
+  (let [room-uuid (random-uuid)
+        room (d/room :join-isolation-integration)
+        persisted (atom [])
+        projected (promise)
+        projector-cache (var-get (room-agents-var 'projected-rooms))
+        cache-before @projector-cache
+        sender-party {:party/id sender :party/type :human :party/display-name "You"}
+        healthy-party (agent-party var-vor "Vár")]
+    (try
+      (reset! projector-cache #{})
+      (with-redefs-fn
+        {(room-agents-var 'ensure-providers!) (constantly nil)
+         #'rooms/get-room-agents (constantly [healthy-party (agent-party lun "Lun")])
+         #'parties/get-party (fn [id] (when (= id sender) sender-party))
+         #'room-agents/live-room (constantly room)
+         #'room-agents/ensure-room-party-entity! (constantly nil)
+         #'room-agents/ensure-agent-joined!
+         (fn [r _ agent _]
+           (if (= lun (:party/id agent))
+             (throw (unexpected-ex))
+             (d/join r (d/scripted (room-agents/party->actor-kw agent)
+                                   ["healthy reply"] (:ctx r)))))
+         #'room-agents/persist-message!
+         (fn [_ msg-id content _ author _]
+           (swap! persisted conj {:id msg-id :content content :author author})
+           (when (= "healthy reply" content)
+             (deliver projected true)))
+         #'is.simm.model.knowledge-bases/resolve-room-links
+         (fn [_ content] {:content content :unresolved []})
+         #'is.simm.model.message-notify-broadcast/notify-message! (constantly nil)}
+        (fn []
+          (let [result (room-agents/post-user-message! room-uuid "continue" sender nil)]
+            (testing "the real room bus receives the human message and the safe note"
+              (is (= :ok (:status result)))
+              (is (= [var-vor] (:recipients result)))
+              (is (= [lun] (:join-errors result)))
+              (is (some #(= "continue" (:content %)) (d/messages room)))
+              (is (some #(str/includes? (:content %) "server-side fault") (d/messages room))))
+            (testing "the healthy participant answers and the real projector observes it"
+              (is (true? (deref projected 1000 false)))
+              (is (some #(= "healthy reply" (:content %)) (d/messages room)))
+              (is (some #(= "healthy reply" (:content %)) @persisted))))))
+      (finally
+        (reset! projector-cache cache-before)
+        (d/close-room! room)))))
 
 (deftest a-room-with-no-agents-still-broadcasts
   (let [text "mirror this"

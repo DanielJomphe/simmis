@@ -233,6 +233,15 @@ naming the agent and the reason, in the same words the settings screens use. If
 every recipient fails, the message is still posted; the send does not fail, and
 the client shows no send error, because the message WAS sent.
 
+That expected state is not a catch-all. A persistence, context/namespace,
+provider-client, or partial `d/join` fault is classified as `:join-error`, not
+as model unavailability. The server log records it at `:error` with an incident
+reference and the throwable for diagnosis; the room note contains only the
+agent, consequence, and incident reference — never exception text, credentials,
+URLs, or stack detail. Failed initialization removes the context and participant
+created by that attempt before a retry; the next dispatch therefore makes one
+fresh participant rather than a duplicate responder.
+
 Explicit agent edits are a separate path. Updating an agent's own model, prompt,
 or other mutable configuration makes its live participants leave and clears
 their cached contexts. The next dispatch rejoins the agent and resolves a fresh
