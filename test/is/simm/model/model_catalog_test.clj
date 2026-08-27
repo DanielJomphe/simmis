@@ -8,7 +8,10 @@
 
 (def ^:private openai-key "catalog-openai-key")
 (def ^:private fireworks-key "catalog-fireworks-key")
+(def ^:private anthropic-key "catalog-anthropic-key")
 (def ^:private fireworks-model "accounts/fireworks/models/glm-5p2")
+(def ^:private anthropic-model "claude-sonnet-4-6")
+(def ^:private anthropic-other "claude-opus-4-7")
 
 (use-fixtures
  :each
@@ -30,7 +33,8 @@
   (binding [selection/*env-lookup* env
             selection/*provider-base-urls*
             {:openai (str (:base-url fixture) "/openai")
-             :fireworks (str (:base-url fixture) "/fireworks")}]
+             :fireworks (str (:base-url fixture) "/fireworks")
+             :anthropic (str (:base-url fixture) "/anthropic")}]
     (selection/reset-catalog!)
     (f)))
 
@@ -369,3 +373,120 @@
            (is (= :fireworks-inference-models-list (:catalog-contract latest)))
            (is (= :openai-compatible (:endpoint-kind latest)))
            (is (false? (:native-openai? latest)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Anthropic rows answer to the account, not to the credential
+;; ---------------------------------------------------------------------------
+
+(deftest anthropic-rows-need-account-evidence-not-just-a-key
+  ;; The false-availability regression, at the surface a person actually sees.
+  ;; A present key and a curated row used to be enough for a green, saveable
+  ;; row that promised a join it could not deliver.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [[anthropic-model]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (let [rows (catalog/choices)
+               served (row rows anthropic-model)
+               absent (row rows anthropic-other)]
+           (is (= :available (:availability served)))
+           (is (:available? served))
+           (is (= anthropic-model (:resolves (catalog/require-available-choice!
+                                              anthropic-model)))
+               "and the save path accepts the served model")
+
+           (testing "a curated model the account does not serve stays visible"
+             (is (some? absent))
+             (is (= :unavailable-to-account (:availability absent)))
+             (is (:disabled? absent))
+             (is (= "Unavailable to account" (:availability-label absent)))
+             (is (= (str "Anthropic does not make this model available to "
+                         "this account.")
+                    (:availability-explanation absent))))
+
+           (testing "and the picker fails closed on it"
+             (let [e (is (thrown? clojure.lang.ExceptionInfo
+                                  (catalog/require-available-choice!
+                                   anthropic-other)))]
+               (is (= :model-choice-unavailable (:type (ex-data e))))
+               (is (= :unavailable-to-account (:availability (ex-data e))))))))))))
+
+(deftest anthropic-provenance-names-its-own-contract
+  (fake/with-server
+   (fn [{:keys [base-url] :as fixture}]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [[anthropic-model]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (let [served (row (catalog/choices) anthropic-model)]
+           (is (= :anthropic-models-api (:catalog-contract served)))
+           (is (= :anthropic-native (:endpoint-kind served)))
+           (is (false? (:native-openai? served)))
+           (is (= (str base-url "/anthropic") (:base-url served)))
+           (is (= "ANTHROPIC_API_KEY" (:credential-source served)))))))))
+
+(deftest an-anthropic-outage-keeps-the-rows-and-the-outage-copy
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [[anthropic-model]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (is (= :available (:availability (row (catalog/choices)
+                                               anthropic-model))))
+         (fake/respond-with! fixture "/anthropic/models" anthropic-key 503
+                             {:type "error"
+                              :error {:type "api_error" :message "overloaded"}})
+         (selection/catalog true)
+         (let [rows (catalog/choices)
+               served (row rows anthropic-model)]
+           (is (every? (into #{} (map :value) rows) (curated-values))
+               "every curated row survives the outage")
+           (is (= :temporarily-unreachable (:availability served)))
+           (is (:disabled? served))
+           (is (= "Temporarily unreachable" (:availability-label served)))
+           (is (str/includes? (:availability-explanation served)
+                              "Last-known status is retained"))
+           (is (str/includes? (:availability-explanation served) "Anthropic"))
+           (is (thrown? clojure.lang.ExceptionInfo
+                        (catalog/require-available-choice! anthropic-model)))))))))
+
+(deftest an-anthropic-rejection-names-the-variable-to-replace
+  ;; A revoked key is not an outage. The copy must send the operator to replace
+  ;; it rather than to wait for a refresh that cannot arrive.
+  (fake/with-server
+   (fn [fixture]
+     (fake/reject-anthropic-credential!
+      fixture "/anthropic/models" anthropic-key 401)
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (let [served (row (catalog/choices) anthropic-model)]
+           (is (= :credential-rejected (:availability served)))
+           (is (:disabled? served))
+           (is (= "Credential rejected" (:availability-label served)))
+           (is (str/includes? (:availability-explanation served)
+                              "ANTHROPIC_API_KEY"))
+           (is (str/includes? (:availability-explanation served) "Anthropic"))
+           (is (not (str/includes? (:availability-explanation served)
+                                   "Last-known status is retained")))))))))
+
+(deftest anthropic-rows-never-carry-the-credential
+  ;; Provenance travels to the client. The named variable is safe; the value is
+  ;; not, and no failure path may leak it either.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [[anthropic-model]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (doseq [rows [(catalog/choices)
+                       (do (fake/reject-anthropic-credential!
+                            fixture "/anthropic/models" anthropic-key 403)
+                           (selection/catalog true)
+                           (catalog/choices))]]
+           (doseq [row' rows]
+             (is (not-any? #(and (string? %) (str/includes? % anthropic-key))
+                           (map str (vals row')))
+                 (str "no field of " (:value row') " carries the key")))))))))

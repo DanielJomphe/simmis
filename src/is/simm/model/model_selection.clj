@@ -55,9 +55,17 @@
 
    `:catalog-required?` means a model list from this provider's own endpoint
    participates in availability. WHICH list, and on whose authority, is per
-   endpoint rather than per protocol — see `catalog-contracts`. Anthropic
-   exposes no list this code reads, so its curated rows are gated by
-   credential + registry/adapter support.
+   endpoint rather than per protocol — see `catalog-contracts`.
+
+   Anthropic used to sit here with `:catalog-required? false`, so a present
+   `ANTHROPIC_API_KEY` plus a curated row was reported as `:available` —
+   `available?` true, saveable, promised to join. Neither fact is evidence
+   about the account: a key from an organization without Opus access, or one
+   revoked an hour ago, produced exactly the same green row, and the first
+   thing that ever contradicted it was a turn failing inside a room. Anthropic
+   documents a native Models API that answers precisely the missing question,
+   so it is read like every other catalog provider.
+
    Keeping the exact environment variable beside the adapter contract is what
    lets every unavailable surface give the same actionable explanation."
   {:openai {:credential-source "OPENAI_API_KEY"
@@ -67,7 +75,7 @@
                :catalog-required? true
                :implemented-api-types #{:openai-chat}}
    :anthropic {:credential-source "ANTHROPIC_API_KEY"
-               :catalog-required? false
+               :catalog-required? true
                :implemented-api-types #{:anthropic-messages}}})
 
 (defn availability-state
@@ -167,6 +175,19 @@
 
 (def ^:private openai-base "https://api.openai.com/v1")
 (def ^:private fireworks-base "https://api.fireworks.ai/inference/v1")
+(def ^:private anthropic-base "https://api.anthropic.com/v1")
+
+(def anthropic-api-version
+  "Value of Anthropic's REQUIRED `anthropic-version` request header.
+
+   Anthropic versions the API by header, not by URL, and documents `2023-06-01`
+   as the current version; within a version it promises to preserve existing
+   input and output parameters and to add only optional inputs and new output
+   values. That promise is what lets this code treat a MISSING documented field
+   as a contract violation rather than as an omission it should tolerate.
+
+   <https://platform.claude.com/docs/en/api/versioning>"
+  "2023-06-01")
 
 (def ^:dynamic *env-lookup*
   "Environment lookup seam. Tests bind this to a map so catalog verification
@@ -178,14 +199,23 @@
    uses the vendors' documented endpoints. OPENAI_BASE_URL, when present, still
    overrides only the OpenAI entry."
   {:openai openai-base
-   :fireworks fireworks-base})
+   :fireworks fireworks-base
+   :anthropic anthropic-base})
 
-(def ^:private snapshot-id-re
+(def ^:private openai-snapshot-id-re
   ;; gpt-5.5-2026-04-23 — a dated snapshot of a model we already list under its
   ;; rolling id. The date's digit groups would parse as a version token, so
   ;; leaving these in would have `:auto` chasing release dates inside families
   ;; that exist only because a snapshot id got split apart.
   #".*-\d{4}-\d{2}-\d{2}$")
+
+(def ^:private anthropic-snapshot-id-re
+  ;; claude-haiku-4-5-20251001 — Anthropic writes the date UNDASHED, so the
+  ;; OpenAI pattern above never matched one. The two providers also want
+  ;; opposite treatment, which is why this is a per-contract policy rather than
+  ;; one shared regex: OpenAI's dated ids are DROPPED, Anthropic's are KEPT and
+  ;; additionally contributed under their alias (see `anthropic-alias-id`).
+  #"^(.*)-(\d{8})$")
 
 (def catalog-contracts
   "How ONE configured endpoint's model list is read, and on whose authority.
@@ -221,19 +251,37 @@
    `OPENAI_BASE_URL`. Whoever set that variable asserted protocol
    compatibility; no vendor promised a models list there either.
 
-   `:documented?` records who stands behind the response, not whether it works.
-   Every contract is checked on each fetch and fails closed."
+   `:anthropic-models-api` is Anthropic's own documented List models operation
+   and is NOT an OpenAI-compatible endpoint — routing it through the parser
+   above would be wrong in three separate ways at once. It authenticates with
+   `x-api-key`, not `Authorization: Bearer`; it requires the `anthropic-version`
+   header on every request; and it PAGES, answering
+   `{\"data\": [{\"id\": ..., \"type\": \"model\", ...}], \"has_more\": bool,
+   \"first_id\": ..., \"last_id\": ...}` with a default page of 20 and a maximum
+   of 1000, walked forward by passing `last_id` back as `after_id`. Under the
+   OpenAI parser its mandatory `has_more` reads as an unexpected page marker and
+   every page after the first is simply lost.
+
+   `:auth` names how the credential is presented, `:paginated?` whether the
+   contract has more than one page to collect, and `:dated-snapshots` what each
+   vendor's dated ids mean here. `:documented?` records who stands behind the
+   response, not whether it works. Every contract is checked on each fetch and
+   fails closed."
   {:openai-models-api
    {:path "/models"
     :envelope :openai-models-list
+    :auth :bearer
     :paginated? false
+    :dated-snapshots :drop
     :documented? true
     :documentation "https://platform.openai.com/docs/api-reference/models/list"}
 
    :fireworks-inference-models-list
    {:path "/models"
     :envelope :openai-models-list
+    :auth :bearer
     :paginated? false
+    :dated-snapshots :drop
     :documented? false
     :observed "2026-08-27: GET https://api.fireworks.ai/inference/v1/models"
     :documentation "https://docs.fireworks.ai/tools-sdks/openai-compatibility"
@@ -242,8 +290,32 @@
    :openai-compatible-models-list
    {:path "/models"
     :envelope :openai-models-list
+    :auth :bearer
     :paginated? false
-    :documented? false}})
+    :dated-snapshots :drop
+    :documented? false}
+
+   :anthropic-models-api
+   {:path "/models"
+    :envelope :anthropic-models-list
+    :auth :anthropic-api-key
+    :paginated? true
+    :page-limit 1000
+    :dated-snapshots :alias
+    :documented? true
+    :documentation "https://platform.claude.com/docs/en/api/models/list"}})
+
+(def ^:private max-catalog-pages
+  "How many pages one paginated contract may collect before the walk is called
+   broken.
+
+   At Anthropic's documented maximum page size this is 10,000 model ids, orders
+   of magnitude above any real account. The cap exists for the case where a
+   provider keeps answering `has_more: true` — without it the fetch would spin
+   forever holding the refresh. Hitting it is reported as a FAILURE, never as a
+   short list: a truncated account is the one outcome that turns missing
+   evidence into `:unavailable-to-account`."
+  10)
 
 (def ^:private continuation-keys
   "Keys with which a paging answer says \"there is more\".
@@ -284,14 +356,64 @@
          distinct
          vec)))
 
+(defn- anthropic-models-list-ids
+  "Ids from ONE page of Anthropic's Models API, `{:data [{:id ...}], :has_more
+   bool}`.
+
+   `has_more` is a documented, non-optional member of the response, and within
+   the `2023-06-01` version Anthropic promises not to remove it. Requiring it is
+   therefore how this parser refuses a body that is not this contract — an
+   OpenAI-shaped `{\"object\": \"list\", \"data\": [...]}` answer carries no
+   `has_more`, and reading one here would silently accept a single page as a
+   complete account.
+
+   Member fields beyond `id` (`display_name`, `created_at`, `max_input_tokens`,
+   `max_tokens`, `capabilities`) are ignored by design: the catalog answers
+   which ids this credential may address, and dvergr's registry — not a model
+   list — owns metadata."
+  [body]
+  (when-not (map? body)
+    (throw (ex-info "Model list response is not a JSON object" {})))
+  (when-not (contains? body :has_more)
+    (throw (ex-info "Model list response is missing Anthropic's has_more field"
+                    {})))
+  (let [data (:data body)]
+    (when-not (sequential? data)
+      (throw (ex-info "Model list response has no data list" {})))
+    (->> data (map :id) (filter string?) distinct vec)))
+
+(defn anthropic-alias-id
+  "The alias a dated Anthropic snapshot id resolves to, or nil.
+
+   Anthropic documents that for models before the 4.6 generation \"the alias is
+   a convenience pointer that resolves to the dated ID\", spelled
+   `claude-haiku-4-5` for `claude-haiku-4-5-20251001`; from 4.6 on, ids are
+   dateless and are their own pinned snapshot.
+
+   The list operation answers with pinned ids, and dvergr's registry carries the
+   dateless spelling — `claude-haiku-4-5`, `claude-sonnet-4-5`,
+   `claude-opus-4-5`. Matched as raw strings those two never meet, so an account
+   that plainly serves Haiku 4.5 would have reported it
+   `:unavailable-to-account`: a permanent verdict about the account produced by
+   a naming convention. Contributing the alias BESIDE the pinned id resolves
+   either spelling and invents nothing — the alias is a pointer to that exact
+   snapshot the account was just observed to serve.
+
+   <https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions>"
+  [model-id]
+  (second (re-matches anthropic-snapshot-id-re (str model-id))))
+
 (defn- parse-catalog-body
   "Model ids under ONE endpoint's contract.
 
    Provider-specific by construction: there is no single \"OpenAI-compatible\"
-   parser here, only a parser per contract."
+   parser here, only a parser per contract. Anthropic is not an
+   OpenAI-compatible provider and never reaches the parser above."
   [catalog-contract body]
   (case catalog-contract
     :openai-models-api (openai-models-list-ids body)
+
+    :anthropic-models-api (anthropic-models-list-ids body)
 
     :fireworks-inference-models-list
     ;; Fireworks' native ListModels answers `{"models": [...], "nextPageToken":
@@ -312,11 +434,37 @@
     (throw (ex-info "Endpoint has no model-list contract"
                     {:contract catalog-contract}))))
 
+(defn- normalize-model-ids
+  "Served ids as the registry and the picker spell them, under one contract.
+
+   Two vendors, two opposite policies for the same phenomenon — a dated id:
+
+   `:drop` (OpenAI and the compatible bases) removes `gpt-5.5-2026-04-23`,
+   because the date's digit groups parse as a version token and `:auto` would
+   chase release dates through families that exist only because a snapshot id
+   got split apart.
+
+   `:alias` (Anthropic) KEEPS the pinned id and adds its alias, because
+   Anthropic's list answers with pinned ids while the registry spells the same
+   model dateless. Dropping them instead would delete the only evidence the
+   account gave.
+
+   Order is preserved and duplicates collapse, so an account that already lists
+   both spellings gains nothing and loses nothing."
+  [catalog-contract model-ids]
+  (case (:dated-snapshots (get catalog-contracts catalog-contract))
+    :alias (into [] (comp (mapcat (juxt identity anthropic-alias-id))
+                          (remove nil?)
+                          (distinct))
+                 model-ids)
+    (into [] (comp (remove #(re-matches openai-snapshot-id-re %)) (distinct))
+          model-ids)))
+
 (defn- normalize-base-url [base]
   (str/replace (str base) #"/+$" ""))
 
 (defn- configured-endpoints
-  "Every configured OpenAI-protocol endpoint as provider-aware records.
+  "Every configured provider endpoint as provider-aware records.
 
    Provider identity is configuration, never inferred from the URL. This is
    why OPENAI_BASE_URL may equal Fireworks' base without either entry replacing
@@ -324,15 +472,29 @@
    borrowed across providers.
 
    `:endpoint-kind` distinguishes native OpenAI from OpenAI-compatible request
-   behavior; `:catalog-contract` names which model-list contract this endpoint
-   answers under (see `catalog-contracts`). The credential itself is
-   intentionally private to this fetch boundary and is never copied into
-   catalog results or cache state."
+   behavior, and marks Anthropic as neither; `:catalog-contract` names which
+   model-list contract this endpoint answers under (see `catalog-contracts`).
+   The credential itself is intentionally private to this fetch boundary and is
+   never copied into catalog results or cache state.
+
+   `OPENAI_BASE_URL` deliberately does not re-point Anthropic: it re-points the
+   key that names it, and an OpenAI-compatible base does not implement
+   Anthropic's Models API."
   []
   (let [openai-key (*env-lookup* "OPENAI_API_KEY")
         fireworks-key (*env-lookup* "FIREWORKS_API_KEY")
+        anthropic-key (*env-lookup* "ANTHROPIC_API_KEY")
         custom-openai-base (*env-lookup* "OPENAI_BASE_URL")]
     (cond-> []
+      (seq anthropic-key)
+      (conj {:provider :anthropic
+             :base-url (normalize-base-url (:anthropic *provider-base-urls*))
+             :credential-source "ANTHROPIC_API_KEY"
+             :endpoint-kind :anthropic-native
+             :native-openai? false
+             :catalog-contract :anthropic-models-api
+             :credential anthropic-key})
+
       (seq fireworks-key)
       (conj {:provider :fireworks
              :base-url (normalize-base-url (:fireworks *provider-base-urls*))
@@ -391,6 +553,47 @@
          :reachability reachability
          :reachable? (= :reachable reachability)))
 
+(defn- catalog-request-headers
+  "How ONE contract presents its credential.
+
+   Anthropic authenticates with `x-api-key` and REQUIRES `anthropic-version` on
+   every request; sending it an OpenAI bearer token gets a 401, which would have
+   read as `:credential-rejected` and told the operator to replace a key that
+   was fine. The credential is passed in and used here; it is never returned,
+   logged, or stored."
+  [catalog-contract credential]
+  (case (:auth (get catalog-contracts catalog-contract))
+    :anthropic-api-key {"x-api-key" credential
+                        "anthropic-version" anthropic-api-version}
+    :bearer {"Authorization" (str "Bearer " credential)}
+    (throw (ex-info "Endpoint contract declares no credential presentation"
+                    {:contract catalog-contract}))))
+
+(defn- page-url
+  "One page request URL. `after` is the previous page's `last_id` cursor."
+  [base-url {:keys [path page-limit]} after]
+  (str base-url path
+       (when page-limit
+         (str "?limit=" page-limit
+              (when after
+                (str "&after_id="
+                     (java.net.URLEncoder/encode (str after) "UTF-8")))))))
+
+(defn- next-page-cursor
+  "The cursor for the page after `body`, or nil when this was the last page.
+
+   Anthropic signals more pages with `has_more` and hands back `last_id` to
+   pass as `after_id`. `has_more` WITHOUT a usable `last_id` is a contract this
+   code cannot walk, and answering it with a short list would report every id
+   below the cut as `:unavailable-to-account` — so it throws instead."
+  [body]
+  (when (true? (:has_more body))
+    (let [last-id (:last_id body)]
+      (when-not (and (string? last-id) (seq last-id))
+        (throw (ex-info "Model list says has_more but supplies no last_id cursor"
+                        {})))
+      last-id)))
+
 (defn- fetch-endpoint!
   "The model ids one endpoint currently serves, under that endpoint's contract.
 
@@ -400,42 +603,56 @@
    and calling it \"could not be refreshed\" sends an operator to wait for a
    recovery that cannot arrive. Neither failure ever produces ids, so no
    failure — and no malformed, truncated, or foreign-schema body — can be read
-   as availability."
+   as availability.
+
+   A PAGINATED contract is complete only when the walk ends on its own. A
+   failure on page three discards pages one and two rather than reporting them:
+   a partial account is indistinguishable from a small one, and the difference
+   between them is `:unavailable-to-account`, which reads as permanent."
   [{:keys [base-url credential catalog-contract] :as endpoint}]
-  (let [{:keys [path]} (get catalog-contracts catalog-contract)]
+  (let [{:keys [paginated?] :as contract} (get catalog-contracts catalog-contract)
+        headers (catalog-request-headers catalog-contract credential)]
     (try
-      (let [resp ((requiring-resolve 'babashka.http-client/get)
-                  (str base-url path)
-                  {:headers {"Authorization" (str "Bearer " credential)}
-                   :timeout 10000
-                   ;; Classify the status here rather than letting the client
-                   ;; throw: 401 and 403 have to survive as themselves.
-                   :throw false})
-            status (:status resp)]
-        (cond
-          (contains? #{401 403} status)
-          (do (log/log! {:level :warn :id ::catalog-credential-rejected
-                         :msg "Provider refused the configured credential"
-                         :data {:provider (:provider endpoint)
-                                :base-url base-url
-                                :credential-source (:credential-source endpoint)
-                                :catalog-contract catalog-contract
-                                :status status}})
-              {:outcome :credential-rejected})
+      (loop [after nil
+             page 1
+             collected []]
+        (when (> page max-catalog-pages)
+          (throw (ex-info "Model list did not finish paging"
+                          {:pages max-catalog-pages})))
+        (let [resp ((requiring-resolve 'babashka.http-client/get)
+                    (page-url base-url contract after)
+                    {:headers headers
+                     :timeout 10000
+                     ;; Classify the status here rather than letting the client
+                     ;; throw: 401 and 403 have to survive as themselves.
+                     :throw false})
+              status (:status resp)]
+          (cond
+            (contains? #{401 403} status)
+            (do (log/log! {:level :warn :id ::catalog-credential-rejected
+                           :msg "Provider refused the configured credential"
+                           :data {:provider (:provider endpoint)
+                                  :base-url base-url
+                                  :credential-source (:credential-source endpoint)
+                                  :catalog-contract catalog-contract
+                                  :status status}})
+                {:outcome :credential-rejected})
 
-          (not (<= 200 status 299))
-          (throw (ex-info "Model endpoint returned a non-success status"
-                          {:status status}))
+            (not (<= 200 status 299))
+            (throw (ex-info "Model endpoint returned a non-success status"
+                            {:status status}))
 
-          :else
-          (let [body ((requiring-resolve 'jsonista.core/read-value)
-                      (:body resp)
-                      ((requiring-resolve 'jsonista.core/object-mapper)
-                       {:decode-key-fn true}))]
-            {:outcome :reachable
-             :model-ids (->> (parse-catalog-body catalog-contract body)
-                             (remove #(re-matches snapshot-id-re %))
-                             vec)})))
+            :else
+            (let [body ((requiring-resolve 'jsonista.core/read-value)
+                        (:body resp)
+                        ((requiring-resolve 'jsonista.core/object-mapper)
+                         {:decode-key-fn true}))
+                  ids (into collected (parse-catalog-body catalog-contract body))
+                  cursor (when paginated? (next-page-cursor body))]
+              (if cursor
+                (recur cursor (inc page) ids)
+                {:outcome :reachable
+                 :model-ids (normalize-model-ids catalog-contract ids)})))))
       (catch Throwable t
         (log/log! {:level :warn :id ::catalog-fetch-failed
                    :data {:provider (:provider endpoint)

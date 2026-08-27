@@ -82,9 +82,11 @@ authorized in advance with a budget rather than after the fact.
 
 Agents call an LLM through a provider key from the environment —
 `FIREWORKS_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. A provider is
-registered only when its key is present. `OPENAI_API_KEY` on its own talks to
-OpenAI; `OPENAI_BASE_URL` re-points that key at any other OpenAI-compatible
-endpoint, including a local one. Each agent's model can be set per room in its
+registered only when its key is present. A key is what lets simmis ASK a
+provider what the account may run; it is never by itself the answer.
+`OPENAI_API_KEY` on its own talks to OpenAI; `OPENAI_BASE_URL` re-points that
+key at any other OpenAI-compatible endpoint, including a local one. It does not
+re-point Anthropic, which speaks its own protocol. Each agent's model can be set per room in its
 settings. Fireworks always uses its own base and `FIREWORKS_API_KEY`: provider
 credentials are never borrowed, even when two provider records have the same
 URL. Supplying `OPENAI_BASE_URL` also marks that record OpenAI-compatible rather
@@ -119,8 +121,8 @@ resolved version separately, and explains whether a newer family version is in
 use or no valid forward candidate exists.
 
 The concrete id is resolved when the participant is joined or rejoined. For
-catalog-backed providers, a model list answers which ids that credential can
-currently reach (`is.simm.model.model-selection`). It does not supply pricing,
+every provider, a model list from that provider's own endpoint answers which
+ids the credential can currently reach (`is.simm.model.model-selection`). It does not supply pricing,
 context limits or capability metadata. Each returned id retains its provider,
 base URL, credential source, reachability, and the CONTRACT its evidence came
 from; identical URLs therefore remain two records.
@@ -133,20 +135,43 @@ whose promise each one is:
 | `:openai-models-api` | `GET https://api.openai.com/v1/models` | documented by OpenAI |
 | `:fireworks-inference-models-list` | `GET https://api.fireworks.ai/inference/v1/models` | OBSERVED on Fireworks' documented inference base; Fireworks documents completions and chat completions there, not a models list |
 | `:openai-compatible-models-list` | `GET <OPENAI_BASE_URL>/models` | asserted by whoever set the variable |
+| `:anthropic-models-api` | `GET https://api.anthropic.com/v1/models` | documented by Anthropic |
 
-All three answer `{"object": "list", "data": [{"id": ...}]}` and none of them
-pages. Fireworks' documented NATIVE list operation is a different API answering
-a different question — `GET /v1/accounts/{account_id}/models` returns
+The first three answer `{"object": "list", "data": [{"id": ...}]}`, present the
+credential as `Authorization: Bearer`, and do not page. Fireworks' documented
+NATIVE list operation is a different API answering a different question —
+`GET /v1/accounts/{account_id}/models` returns
 `{"models": [{"name": ..., "supportsServerless": ...}], "nextPageToken": ...}`,
 pages at 200 rows, and enumerates a vendor account's whole collection rather
 than what this key can call. simmis does not read it, and a body in that shape
 arriving at the compatible path is refused rather than read as an account that
 serves nothing.
 
+Anthropic is **not** an OpenAI-compatible provider and does not pass through
+that parser. Its List models operation authenticates with `x-api-key`, requires
+the `anthropic-version: 2023-06-01` header on every request, and PAGES: it
+answers `{"data": [{"id": ..., "type": "model", ...}], "has_more": bool,
+"first_id": ..., "last_id": ...}`, defaulting to 20 rows and accepting up to
+1000, walked forward by passing `last_id` back as `after_id`. simmis walks it to
+the end; a failure part way through discards the whole list rather than
+reporting a short one, because a truncated account is indistinguishable from a
+small one and the difference between them is `:unavailable-to-account`. Its
+mandatory `has_more` is also how the parser refuses a foreign body: an
+OpenAI-shaped answer carries none, and reading one here would accept a single
+page as a whole account.
+
+Dated ids get opposite treatment per vendor, which is why that too is a contract
+property. OpenAI's `gpt-5.5-2026-04-23` is DROPPED — the date's digit groups
+parse as a version token, and `:auto` would chase release dates. Anthropic's
+`claude-haiku-4-5-20251001` is KEPT and its alias `claude-haiku-4-5` added
+beside it: Anthropic answers with pinned ids while the registry spells
+pre-4.6-generation models dateless, and matching those raw reported an account
+that plainly serves Haiku 4.5 as not having it.
+
 A fetch counts only when it succeeds, parses, and is complete. A missing `data`
-list, a foreign schema, or a page marker leaves the last-known ids in place and
-reports a failure, because incomplete evidence must never harden into a verdict
-about the account. If one fetch fails, only that provider's last-known ids
+list, a foreign schema, an unwalkable cursor, or a page marker on a contract
+that does not page leaves the last-known ids in place and reports a failure,
+because incomplete evidence must never harden into a verdict about the account. If one fetch fails, only that provider's last-known ids
 survive and the curated rows remain visible as `:temporarily-unreachable`. A
 provider that ANSWERS and refuses the key is separated out: waiting fixes an
 outage, and only a new key fixes a rejection. The picker and resolver share six

@@ -6,6 +6,7 @@
 
 (def ^:private openai-key "fixture-openai-key")
 (def ^:private fireworks-key "fixture-fireworks-key")
+(def ^:private anthropic-key "fixture-anthropic-key")
 
 (use-fixtures
   :each
@@ -29,7 +30,8 @@
 
 (defn- fixture-bases [base-url]
   {:openai (str base-url "/openai")
-   :fireworks (str base-url "/fireworks")})
+   :fireworks (str base-url "/fireworks")
+   :anthropic (str base-url "/anthropic")})
 
 (defn- with-config [fixture env f]
   (binding [selection/*env-lookup* env
@@ -325,7 +327,7 @@
            (is (not-any? #(contains? % :credential) records)))))
      (is (= [{:path "/fireworks/models"
               :authorization (str "Bearer " fireworks-key)}]
-            @requests)))))
+            (mapv #(select-keys % [:path :authorization]) @requests))))))
 
 (deftest both-provider-keys-remain-scoped
   (fake/with-server
@@ -357,7 +359,8 @@
              (is (false? (:native-openai? record)))
              (is (= [{:path "/compatible/models"
                       :authorization (str "Bearer " openai-key)}]
-                    @requests)))))))))
+                    (mapv #(select-keys % [:path :authorization])
+                          @requests))))))))))
 
 (deftest identical-urls-do-not-collapse-provider-records
   (fake/with-server
@@ -468,8 +471,21 @@
        base, not a models list")
   (is (false? (:documented?
                (:openai-compatible-models-list selection/catalog-contracts))))
-  (is (every? #(false? (:paginated? %)) (vals selection/catalog-contracts))
-      "no contract this code reads pages; a page marker is a contract change"))
+  ;; Pagination is per contract too. For the three OpenAI-shaped contracts a
+  ;; page marker is a contract change and fails closed; Anthropic DOCUMENTS a
+  ;; cursor walk, and refusing to walk it would have reported everything past
+  ;; the first page as unavailable to the account.
+  (is (every? #(false? (:paginated? (selection/catalog-contracts %)))
+              [:openai-models-api :fireworks-inference-models-list
+               :openai-compatible-models-list]))
+  (is (true? (:paginated? (:anthropic-models-api selection/catalog-contracts))))
+  (is (true? (:documented? (:anthropic-models-api selection/catalog-contracts))))
+  (is (= :anthropic-api-key
+         (:auth (:anthropic-models-api selection/catalog-contracts)))
+      "Anthropic is not an OpenAI-compatible provider and does not use a bearer token")
+  (is (every? #(= :bearer (:auth (selection/catalog-contracts %)))
+              [:openai-models-api :fireworks-inference-models-list
+               :openai-compatible-models-list])))
 
 (deftest a-fireworks-answer-carries-provider-specific-member-fields
   ;; The observed Fireworks entries carry kind, context_length and supports_*
@@ -599,4 +615,268 @@
          (is (= :credential-rejected
                 (:reachability (selection/provider-catalog-status :fireworks))))
          (is (= ["gpt-5.6-luna"]
+                (mapv :model-id (selection/available-catalog)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Anthropic — a native contract, not an OpenAI-compatible one
+;; ---------------------------------------------------------------------------
+
+(deftest anthropic-is-addressed-under-its-own-contract
+  ;; Anthropic authenticates with `x-api-key` and REQUIRES `anthropic-version`
+  ;; on every request. A bearer token gets a 401 there, which this code would
+  ;; have reported as `:credential-rejected` — telling an operator to replace a
+  ;; key that was never the problem.
+  (fake/with-server
+   (fn [{:keys [requests] :as fixture}]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-opus-4-7"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (let [records (selection/catalog true)
+               request (first @requests)]
+           (is (= [:anthropic] (mapv :provider records)))
+           (is (= :anthropic-models-api (:catalog-contract (first records))))
+           (is (= :anthropic-native (:endpoint-kind (first records))))
+           (is (false? (:native-openai? (first records))))
+           (is (= anthropic-key (:api-key request))
+               "the credential travels in x-api-key")
+           (is (nil? (:authorization request))
+               "and never as a bearer token")
+           (is (= selection/anthropic-api-version
+                  (:anthropic-version request)))
+           (is (not-any? #(contains? % :credential) records))))))))
+
+(deftest anthropic-pages-are-walked-to-the-end
+  ;; The documented page default is 20 and `has_more`/`last_id` carry the walk.
+  ;; Reading only the first page would report every model after it as
+  ;; `:unavailable-to-account` — a permanent verdict produced by pagination.
+  (fake/with-server
+   (fn [{:keys [requests] :as fixture}]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-opus-4-7" "claude-sonnet-4-6"]
+                             ["claude-opus-4-6" "claude-haiku-4-5"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (is (= ["claude-opus-4-7" "claude-sonnet-4-6"
+                 "claude-opus-4-6" "claude-haiku-4-5"]
+                (mapv :model-id (selection/catalog true))))
+         (is (= [nil "claude-sonnet-4-6"]
+                (mapv #(get (:query %) "after_id") @requests))
+             "the second page is fetched with the first page's last_id")
+         (is (= ["1000" "1000"] (mapv #(get (:query %) "limit") @requests)))
+         (doseq [id ["claude-opus-4-7" "claude-haiku-4-5"]]
+           (is (true? (:available?
+                       (selection/model-availability :anthropic id)))
+               (str id " is served on some page"))))))))
+
+(deftest an-anthropic-model-absent-from-the-account-is-not-available
+  ;; A complete, contract-shaped list that simply does not contain the model is
+  ;; the ONE piece of evidence that may say `:unavailable-to-account`.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-sonnet-4-6"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (selection/catalog true)
+         (is (true? (:available?
+                     (selection/model-availability
+                      :anthropic "claude-sonnet-4-6"))))
+         (let [absent (selection/model-availability
+                       :anthropic "claude-opus-4-7")]
+           (is (= :unavailable-to-account (:state absent)))
+           (is (false? (:available? absent)))
+           (is (nil? (selection/resolve-model {:model "claude-opus-4-7"}))
+               "and it does not fall through to any other model")))))))
+
+(deftest a-registered-anthropic-model-needs-account-evidence
+  ;; The regression this closes. The key is present and dvergr's registry knows
+  ;; the model, which is exactly the state that used to report `:available`.
+  ;; With no successful list, availability is unknown — never confirmed.
+  (fake/with-server
+   (fn [{:keys [requests] :as fixture}]
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (is (some? (registry/get-model "claude-opus-4-7"))
+             "precondition: the registry carries the model")
+         (selection/catalog true)
+         (let [availability (selection/model-availability
+                             :anthropic "claude-opus-4-7")]
+           (is (not= :available (:state availability)))
+           (is (false? (:available? availability)))
+           (is (= :temporarily-unreachable (:state availability))
+               "an endpoint that never answered is a wait, not a verdict"))
+         (is (seq @requests)
+             "and a credential alone no longer skips asking the provider"))))))
+
+(deftest anthropic-with-no-credential-asks-nothing
+  (fake/with-server
+   (fn [{:keys [requests] :as fixture}]
+     (with-config fixture {}
+       (fn []
+         (let [availability (selection/model-availability
+                             :anthropic "claude-opus-4-7")]
+           (is (= :needs-credential (:state availability)))
+           (is (= "ANTHROPIC_API_KEY" (:credential-source availability))))
+         (is (empty? @requests)))))))
+
+(deftest an-anthropic-rejection-is-not-an-outage
+  ;; 401 and 403 both mean this key will not work until it is replaced.
+  (doseq [status [401 403]]
+    (fake/with-server
+     (fn [fixture]
+       (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                              [["claude-opus-4-7"]])
+       (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+         (fn []
+           (selection/catalog true)
+           (is (true? (:available? (selection/model-availability
+                                    :anthropic "claude-opus-4-7"))))
+           (fake/reject-anthropic-credential!
+            fixture "/anthropic/models" anthropic-key status)
+           (selection/catalog true)
+           (let [status' (selection/provider-catalog-status :anthropic)
+                 availability (selection/model-availability
+                               :anthropic "claude-opus-4-7")]
+             (is (= :credential-rejected (:reachability status'))
+                 (str "HTTP " status))
+             (is (= :credential-rejected (:state availability)))
+             (is (false? (:available? availability)))
+             (is (= [] (selection/available-catalog)))
+             (is (nil? (selection/resolve-model
+                        {:model "claude-opus-4-7"}))))))))))
+
+(deftest an-anthropic-outage-retains-last-known-ids-without-claiming-them
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-opus-4-7"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (selection/catalog true)
+         (fake/respond-with! fixture "/anthropic/models" anthropic-key 503
+                             {:type "error"
+                              :error {:type "api_error"
+                                      :message "Internal server error"}})
+         (selection/catalog true)
+         (let [status (selection/provider-catalog-status :anthropic)
+               availability (selection/model-availability
+                             :anthropic "claude-opus-4-7")]
+           (is (= :temporarily-unreachable (:reachability status)))
+           (is (= #{"claude-opus-4-7"} (:served-model-ids status))
+               "last-known evidence survives the outage")
+           (is (= :temporarily-unreachable (:state availability)))
+           (is (false? (:available? availability)))
+           (is (= [] (selection/available-catalog)))))))))
+
+(deftest an-unreachable-anthropic-endpoint-is-not-an-empty-account
+  ;; A connection that never completes is the timeout shape: no answer at all.
+  ;; It must not read as an account that serves nothing.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-opus-4-7"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (selection/catalog true)
+         ;; Same credential, an endpoint that refuses the connection outright.
+         (binding [selection/*provider-base-urls*
+                   {:anthropic "http://127.0.0.1:1/v1"}]
+           (selection/catalog true)
+           (let [availability (selection/model-availability
+                               :anthropic "claude-opus-4-7")]
+             (is (= :temporarily-unreachable (:state availability)))
+             (is (false? (:available? availability)))
+             (is (= [] (selection/available-catalog))))))))))
+
+(deftest an-anthropic-body-that-is-not-the-contract-is-refused
+  ;; Three shapes that must never be read as "this account serves nothing":
+  ;; an OpenAI-shaped answer (no `has_more`), a non-list `data`, and a
+  ;; `has_more` with no cursor to follow.
+  (doseq [[label body]
+          [["an OpenAI-shaped body carries no has_more"
+            {:object "list" :data [{:id "claude-opus-4-7"}]}]
+           ["data is not a list"
+            {:data "not-a-list" :has_more false}]
+           ["has_more with no last_id cannot be walked"
+            {:data [{:id "claude-opus-4-7"}] :has_more true :last_id nil}]
+           ["not a JSON object at all"
+            ["claude-opus-4-7"]]]]
+    (testing label
+      (fake/with-server
+       (fn [fixture]
+         (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                                [["claude-opus-4-7"]])
+         (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+           (fn []
+             (selection/catalog true)
+             (fake/respond-with! fixture "/anthropic/models" anthropic-key
+                                 200 body)
+             (selection/catalog true)
+             (let [status (selection/provider-catalog-status :anthropic)
+                   availability (selection/model-availability
+                                 :anthropic "claude-opus-4-7")]
+               (is (= :temporarily-unreachable (:state availability)))
+               (is (false? (:available? availability)))
+               (is (= #{"claude-opus-4-7"} (:served-model-ids status))
+                   "last-known evidence survives a malformed refresh")
+               (is (= [] (selection/available-catalog)))))))))))
+
+(deftest a-failure-part-way-through-the-walk-discards-the-whole-list
+  ;; Pages one and two are real, page three fails. Keeping the first two would
+  ;; report everything after the cut as `:unavailable-to-account`, which reads
+  ;; as permanent — on evidence that is merely incomplete.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-opus-4-7"] ["claude-sonnet-4-6"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         ;; Page two now claims a third page that the fixture never serves.
+         (fake/respond-at-cursor!
+          fixture "/anthropic/models" anthropic-key "claude-opus-4-7" 200
+          (fake/anthropic-models-body ["claude-sonnet-4-6"] true))
+         (is (= [] (selection/catalog true)))
+         (doseq [id ["claude-opus-4-7" "claude-sonnet-4-6"]]
+           (let [availability (selection/model-availability :anthropic id)]
+             (is (= :temporarily-unreachable (:state availability)) id)
+             (is (false? (:available? availability)) id))))))))
+
+(deftest anthropic-dated-snapshots-resolve-under-their-alias
+  ;; Anthropic's list answers with pinned ids; before the 4.6 generation the
+  ;; registry spells the same model dateless. Matched raw, an account that
+  ;; plainly serves Haiku 4.5 reported it `:unavailable-to-account`.
+  (fake/with-server
+   (fn [fixture]
+     (fake/anthropic-pages! fixture "/anthropic/models" anthropic-key
+                            [["claude-haiku-4-5-20251001" "claude-opus-4-7"]])
+     (with-config fixture {"ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (is (= ["claude-haiku-4-5-20251001" "claude-haiku-4-5"
+                 "claude-opus-4-7"]
+                (mapv :model-id (selection/catalog true)))
+             "the pinned id is kept and the alias is added beside it")
+         (is (true? (:available? (selection/model-availability
+                                  :anthropic "claude-haiku-4-5"))))
+         (is (= "claude-haiku-4-5"
+                (selection/anthropic-alias-id "claude-haiku-4-5-20251001")))
+         (is (nil? (selection/anthropic-alias-id "claude-opus-4-7"))
+             "a dateless id is its own pinned snapshot, not an alias"))))))
+
+(deftest one-providers-anthropic-outage-leaves-the-others-alone
+  (fake/with-server
+   (fn [fixture]
+     (fake/respond! fixture "/fireworks/models" fireworks-key
+                    ["accounts/fireworks/models/glm-5p2"])
+     (fake/reject-anthropic-credential!
+      fixture "/anthropic/models" anthropic-key 401)
+     (with-config fixture {"FIREWORKS_API_KEY" fireworks-key
+                           "ANTHROPIC_API_KEY" anthropic-key}
+       (fn []
+         (selection/catalog true)
+         (is (= :reachable
+                (:reachability (selection/provider-catalog-status :fireworks))))
+         (is (= :credential-rejected
+                (:reachability (selection/provider-catalog-status :anthropic))))
+         (is (= ["accounts/fireworks/models/glm-5p2"]
                 (mapv :model-id (selection/available-catalog)))))))))

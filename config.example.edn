@@ -74,6 +74,15 @@
 ;;                       affected rows: that is a key to replace, not an outage
 ;;                       to wait out.
 ;;
+;;                       A key is permission to ASK, not the answer. Every one
+;;                       of these providers is asked which models the ACCOUNT
+;;                       may run, each over its own documented API — Anthropic
+;;                       over its native paginated Models API, not an
+;;                       OpenAI-compatible one. So a valid key whose account has
+;;                       no access to a given model reads "Unavailable to
+;;                       account" rather than offering a choice that would fail
+;;                       at the first turn.
+;;
 ;;   OPENAI_BASE_URL     Where OPENAI_API_KEY points. UNSET means OpenAI itself
 ;;                       (https://api.openai.com/v1) — the gpt-5.6 / gpt-5.5
 ;;                       models. Set it to reach any other OpenAI-compatible
