@@ -182,15 +182,24 @@
     :log-fn (fn [level msg]
               (sig/set-connection-status! :disconnected)
               (swap! retry-count inc)
-              (case level
-                :error (do
-                         (js/console.error "[Connection] Error:" (pr-str msg))
-                         ;; Show error in status bar with retry info
-                         (sig/show-error!
-                           (str "Connection lost - retrying in 5s")
-                           (str msg)
-                           :network))
-                :warn (js/console.warn "[Connection]" (pr-str msg))
+              ;; superv.async reports some background failures (notably
+              ;; :stale-error-in-supervisor) at :info while carrying the real
+              ;; throwable in the message. Preserve the semantic severity in
+              ;; DevTools instead of disguising an error as console.log.
+              (cond
+                (or (= level :error) (:error msg))
+                (do
+                  (js/console.error "[Connection] Error:" (pr-str msg))
+                  ;; Show error in status bar with retry info
+                  (sig/show-error!
+                    "Connection lost - retrying in 5s"
+                    (str msg)
+                    :network))
+
+                (= level :warn)
+                (js/console.warn "[Connection]" (pr-str msg))
+
+                :else
                 (js/console.log "[Connection]" (pr-str msg))))))
 
 
@@ -212,7 +221,6 @@
   - local-db                          (shared DB — used by non-KB tabs)
   - chat-windows                      (scroll windows for chat tabs)
   - settings-data, admin-data         (settings/admin tab content)
-  - room-states                       (chat tab — narrowing pending)
 
   Removed:
   - kb-states (replaced by per-KB signals; wiki tabs self-track)"
@@ -229,8 +237,6 @@
           settings-data (iv/get-new settings-data-iv)
           admin-data-iv (track sig/admin-data)
           admin-data (iv/get-new admin-data-iv)
-          room-states-iv (track db-signal/room-states)
-          room-states (iv/get-new room-states-iv)
           ;; Context-footer state must be tracked HERE (not inside
           ;; render-column): a mid-spin track resume re-executes the
           ;; message-timeline query whose delta interval is empty on an
@@ -241,7 +247,7 @@
           footer-states (iv/get-new footer-states-iv)]
       (await (columns/render-columns-container
               layout-columns active-column-id local-db chat-windows
-              settings-data admin-data room-states footer-states)))))
+              settings-data admin-data nil footer-states)))))
 
 (defn render-status-bar-spin
   "The app's user-visible error/loading surface.
