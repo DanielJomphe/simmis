@@ -268,6 +268,15 @@
             Used to show 'Thinking...' indicator in the chat."
            (signal runtime false)))
 
+#?(:cljs (def room-runs
+           "Reactive Run projection keyed by Simmis room UUID string.
+
+            Shape: {room-id {:active [run ...] :recent [run ...]}}. Dvergr is
+            the durable/live authority; this is only the UI projection and is
+            deliberately owned by the Spindel execution context so UI forks do
+            not share an ambient mutable Run registry."
+           (signal runtime {})))
+
 #?(:cljs (def chat-scroll-windows
            "Signal holding scroll window state per room.
 
@@ -587,7 +596,7 @@
             [{:id       string     ;; Unique column ID
               :width    number     ;; Width as fraction (0-1)
               :tabs     [{:id      string    ;; Unique tab ID
-                          :type    keyword   ;; :home, :wiki, :chat, :chat-thread, :video
+                          :type    keyword   ;; :home, :wiki, :chat, :chat-thread, :run-history, :run-inspector, :video
                           :title   string    ;; Display title
                           :data    map}]     ;; Type-specific data (page-uuid, room-id, etc.)
               :active-tab string}] ;; ID of active tab in this column
@@ -751,7 +760,7 @@
   "Open content in a tab.
 
    Args:
-   - tab-type: :home, :wiki, :chat, :chat-thread, :video
+   - tab-type: :home, :wiki, :chat, :chat-thread, :run-history, :run-inspector, :video
    - tab-data: {:page-uuid uuid} for wiki, {:room-id string} for chat, etc.
    - opts:
      - :col-id - Target column ID (default: active column)

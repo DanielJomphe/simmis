@@ -37,6 +37,8 @@
             #?(:cljs [is.simm.uis.web.desktop.views.feed :as feed-view])
             #?(:cljs [is.simm.uis.web.desktop.views.history-subway :as subway])
             #?(:cljs [is.simm.uis.web.desktop.views.agent-inspector :as agent-inspector])
+            [is.simm.uis.web.desktop.views.run-history :as run-history]
+            [is.simm.uis.web.desktop.views.run-inspector :as run-inspector]
             [is.simm.uis.web.desktop.signals :as sig]
             [clojure.string :as str]
             #?(:cljs [datahike.api :as d])
@@ -44,6 +46,8 @@
             #?(:cljs [clojure.core.async :refer [go <! put! promise-chan] :include-macros true])
             #?(:cljs [is.simm.uis.web.desktop.remote :as rem])
             #?(:cljs [is.simm.uis.web.desktop.chat-remote :as chat-remote])
+            #?(:cljs [is.simm.uis.web.desktop.run-sync :as run-sync])
+            #?(:cljs [is.simm.uis.web.desktop.run-detail :as run-detail])
             #?(:cljs [is.simm.uis.web.desktop.settings-remote :as settings-remote])
             #?(:cljs [is.simm.uis.web.desktop.admin-remote :as admin-remote])
             #?(:cljs [is.simm.uis.web.desktop.block-editor :as block-editor])
@@ -623,6 +627,8 @@
     :wiki "file-text"
     :chat "message-square"
     :chat-thread "messages-square"
+    :run-history "list-tree"
+    :run-inspector "orbit"
     :video "video"
     :screens "images"
     :feed "activity"
@@ -941,6 +947,10 @@
              ;; Per-room reply composer target. This belongs to the Spindel
              ;; execution context so UI forks do not share an ambient atom.
              chat-reply-targets (iv/get-new (track sig/chat-reply-targets))
+             ;; Dvergr Run data stays in a Spindel signal. Tracking the bounded
+             ;; room map here re-renders chat controls without entangling the
+             ;; live server ChatContext with UI execution forks.
+             room-runs (iv/get-new (track sig/room-runs))
              ;; Track the commit graph so the History subway (a plain fn in
              ;; the context footer) re-renders when a graph loads. Value
              ;; unused here — the subway bare-derefs it.
@@ -990,7 +1000,7 @@
                                                (when live [(:id tab) live])))))
                                        tabs)))
              tab-result (if active-tab-data
-                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets)
+                           (render-tab-content (:type active-tab-data) (:data active-tab-data) local-db chat-windows settings-data admin-data room-states syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs)
                            (el/div {:class "empty-state"}
                              (vc/icon "layout-grid")
                              (el/h3 {} "No content")
@@ -1188,7 +1198,7 @@
   "Render content for a tab based on its type.
 
    kb-states arg removed — wiki tabs self-track their KB signal."
-  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets]]
+  [tab-type data local-db chat-windows settings-data admin-data room-states & [syntax-pref gref video-info screen-sharing screens-results recordings-results web-captures-results chat-reply-targets room-runs]]
   (case tab-type
     :home
     ;; Newcomer landing: the obvious first action is talking to your
@@ -1245,7 +1255,99 @@
     (render-tab-content :chat (assoc data :thread-view? true)
                         local-db chat-windows settings-data admin-data room-states
                         syntax-pref gref video-info screen-sharing screens-results
-                        recordings-results web-captures-results chat-reply-targets)
+                        recordings-results web-captures-results chat-reply-targets room-runs)
+
+    :run-history
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             run-state (get room-runs room-id)
+             runs (vec (:recent run-state))
+             _ (run-sync/ensure-room! room-id)
+             open-run!
+             (fn [event run]
+               (let [new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                 (sig/open-tab!
+                  :run-inspector
+                  (assoc data :run-id (:id run) :run run)
+                  {:title (str "Run · "
+                               (or (:actor-name run)
+                                   (let [id (str (:id run))]
+                                     (subs id 0 (min 8 (count id))))))
+                   :new-tab? (not new-column?)
+                   :new-column? new-column?})))]
+         (run-history/view
+          {:room-name room-name
+           :runs runs
+           :on-open-run open-run!
+           :on-refresh #(run-sync/refresh-room! room-id)
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope (:db-scope data)}
+                           {:title room-name})}))
+       :clj
+       (el/div {:class "run-history"}
+         (el/p {} "Run history")))
+
+    :run-inspector
+    #?(:cljs
+       (let [room-id (str (:room-id data))
+             room-name (or (:room-name data) "Room")
+             room-db-scope (:db-scope data)
+             run-id (str (:run-id data))
+             _ (run-sync/ensure-room! room-id)
+             _ (when (and room-db-scope
+                          (not (get room-states (str room-db-scope))))
+                 (db-sig/connect-room! room-db-scope @web/client))
+             room-db (when room-db-scope
+                       (get-in room-states [(str room-db-scope) :db]))
+             detail (when room-db
+                      (try
+                        (run-detail/query-run-detail room-db run-id)
+                        (catch :default e
+                          (js/console.error "[run-inspector] query failed" run-id e)
+                          nil)))
+             run-state (get room-runs room-id)
+             active-run (some #(when (= run-id (:id %)) %)
+                              (:active run-state))
+             recent-run (some #(when (= run-id (:id %)) %)
+                              (:recent run-state))
+             open-related!
+             (fn [related]
+               (sig/open-tab!
+                :run-inspector
+                (assoc data :run-id (:id related) :run related)
+                {:title (str "Run · "
+                             (or (:actor-name related)
+                                 (let [id (str (:id related))]
+                                   (subs id 0 (min 8 (count id))))))}))]
+         (run-inspector/view
+          {:detail detail
+           :live-run active-run
+           :fallback-run (or recent-run (:run data))
+           :room-name room-name
+           :syntax-pref syntax-pref
+           :on-cancel #(run-sync/cancel! room-id %)
+           :on-back-room
+           #(sig/open-tab! :chat
+                           {:room-id room-id
+                            :room-name room-name
+                            :db-scope room-db-scope}
+                           {:title room-name})
+           :on-open-message
+           (fn [message-id]
+             (sig/open-tab! :chat
+                            {:room-id room-id
+                             :room-name room-name
+                             :db-scope room-db-scope
+                             :anchor-message (str message-id)}
+                            {:title room-name :new-tab? true}))
+           :on-open-run open-related!}))
+       :clj
+       (el/div {:class "run-inspector"}
+         (el/p {} "Run inspector")))
 
     :chat
     #?(:cljs
@@ -1260,6 +1362,31 @@
              chat-context-key (if thread-view?
                                 [room-uuid thread-root-id]
                                 room-uuid)
+             active-runs (get-in room-runs [(str room-id) :active] [])
+             recent-runs (get-in room-runs [(str room-id) :recent] [])
+
+             open-run!
+             (fn [event run-id]
+               (let [run-id (str run-id)
+                     selected (some #(when (= run-id (:id %)) %)
+                                    (concat active-runs recent-runs))
+                     new-column? (or (.-metaKey event) (.-ctrlKey event))]
+                 (sig/open-tab!
+                  :run-inspector
+                  {:room-id room-id
+                   :room-name room-name
+                   :db-scope room-db-scope
+                   :run-id run-id
+                   :run selected}
+                  {:title (str "Run · "
+                               (or (:actor-name selected)
+                                   (subs run-id 0 (min 8 (count run-id)))))
+                   :new-tab? (not new-column?)
+                   :new-column? new-column?})))
+
+             ;; Idempotent transport setup. Subscription bookkeeping is
+             ;; process-local; every value rendered below lives in sig/room-runs.
+             _ (run-sync/ensure-room! room-id)
 
              ;; Trigger room DB connection if we have a db-scope (fire-and-forget)
              _ (when (and room-db-scope
@@ -1533,6 +1660,22 @@
                                                         {:title room-name
                                                          :new-column? true}))}
                    (vc/icon "panel-right-open" {:class "chat-settings-icon"}))))
+             (el/button {:class (vc/class-names
+                                 "chat-settings-btn" "chat-runs-history-btn"
+                                 (when (seq active-runs)
+                                   "chat-runs-history-btn--active"))
+                         :title (str "Runs (" (count recent-runs) " recent)")
+                         :on-click (fn [_]
+                                     (sig/open-tab!
+                                      :run-history
+                                      {:room-id room-id
+                                       :room-name room-name
+                                       :db-scope room-db-scope}
+                                      {:title (str room-name " Runs")
+                                       :new-tab? true}))}
+               (vc/icon "list-tree" {:class "chat-settings-icon"})
+               (when (seq active-runs)
+                 (el/span {:class "chat-runs-history-dot"})))
              (el/button {:class (vc/class-names "chat-settings-btn"
                                                 (when (and screen-sharing
                                                            (contains? screen-sharing room-id))
@@ -1626,6 +1769,11 @@
                    thread-root (:block/content thread-root)
                    :else "The root message is not available in this replica yet."))))
 
+           (chat/run-strip
+            {:runs active-runs
+             :on-open open-run!
+             :on-cancel #(run-sync/cancel! room-id %)})
+
            ;; Messages container — native CSS scroll (overflow-y: auto)
            ;; (Old exploration-diff-summary / fork-controls bars removed
            ;;  alongside the prior fork-tree scaffolding. The chat/*
@@ -1703,6 +1851,8 @@
                        :attachment-blob (:S.Message/attachment-blob item)
                        :attachment-mime (:S.Message/attachment-mime item)
                        :in-reply-to (:message/in-reply-to item)
+                       :run-id (:message/run-id item)
+                       :on-open-run open-run!
                        :thread-parent (:thread/parent item)
                        :reply-count (:thread/reply-count item)
                        :on-open-thread
