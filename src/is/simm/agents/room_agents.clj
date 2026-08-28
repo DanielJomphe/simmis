@@ -2798,14 +2798,23 @@
    dvergr's `add-system-note!` is the seam for notes an AGENT reads on its next
    turn — it writes into a chat-ctx, which an agent that failed to join does
    not have. A note for the HUMAN goes on the room bus, where the room
-   projector persists it into the timeline like any other message."
-  [room room-uuid {:keys [agent type] :as failure} sender-kw others-answering?]
+   projector persists it into the timeline like any other message.
+
+   It is a `d/reply` to `human-msg`, not a fresh root message. The note stands
+   in for the answer that agent would have given, so it belongs where the
+   question was asked: `d/reply` copies the parent's thread root, which is what
+   the thread-aware projection reads. Posted with no parent it would land at
+   the room root, and a person who asked inside a thread would watch that
+   thread stay silent while the explanation appeared somewhere else."
+  [room room-uuid {:keys [agent type] :as failure} sender-kw human-msg others-answering?]
   (try
     (binding [rtc/*execution-context* (:ctx room)]
-      (d/post! room (d/message (party->actor-kw agent) sender-kw
-                               (join-failure-note failure others-answering?) nil
-                               {:role :system
-                                :system-note type})))
+      (let [content (join-failure-note failure others-answering?)
+            metadata {:role :system :system-note type}
+            from-actor (party->actor-kw agent)]
+        (d/post! room (if human-msg
+                        (d/reply from-actor sender-kw content human-msg metadata)
+                        (d/message from-actor sender-kw content nil metadata)))))
     (catch Exception e2
       (log/log! {:level :warn :id ::join-failure-note-failed
                  :data {:room room-uuid
@@ -2893,7 +2902,8 @@
           ;; After the send, so the room reads in causal order: the human's
           ;; message, then why an agent stayed silent.
           (doseq [failure failures]
-            (post-join-failure-note! room room-uuid failure from-kw (boolean (seq joined))))
+            (post-join-failure-note! room room-uuid failure from-kw (first msgs)
+                                     (boolean (seq joined))))
           ;; Reported apart, because they are apart: `:unavailable` is a
           ;; settings state a person can act on, `:join-errors` is a fault an
           ;; operator has to look at. Collapsing both into "unavailable" sent

@@ -25,9 +25,30 @@
    moments run the SAME rules below, so the outcome does not depend on which
    fact showed up first.")
 
+(def ^:private room-tab-types
+  "Tab types that NAME a room, and therefore have a roster verdict.
+
+   `:chat-thread` is one of them. A thread tab is a room tab windowed on one
+   thread: it carries the same `:room-id` and needs the same `:db-scope`, so a
+   cold-boot deep link to `/room/<id>/thread/<id>` fails in exactly the way a
+   `:chat` tab does without this. Its `:thread-root-id` is NOT a room id and is
+   never read or written here — thread identity does not collapse into room
+   identity, and a thread tab is never rewritten into a chat tab."
+  #{:chat :chat-thread})
+
+(defn- roster-title
+  "The label a tab adopts from the roster. A thread tab says which room the
+   thread is in, matching what `open-tab!` writes when a thread is opened from
+   the timeline."
+  [tab room]
+  (if (= :chat-thread (:type tab))
+    (str "Thread · " (:room/name room))
+    (:room/name room)))
+
 (defn heal-chat-tab
   "Reconcile one tab against `rooms`: fill in what the roster knows, or mark
-   the tab as pointing at no room this party can open.
+   the tab as pointing at no room this party can open. Applies to every tab
+   type in `room-tab-types`.
 
    THE FACT ARRIVES WITH THE ROSTER, which is why the reconciliation is keyed
    to it. A chat tab can be created BEFORE the roster exists: `router/init!`
@@ -44,7 +65,7 @@
    merely not-yet. A later refresh that does name the room clears the flag, so
    a room shared with you mid-session heals rather than staying condemned."
   [tab rooms personal-room]
-  (if (not= :chat (:type tab))
+  (if-not (contains? room-tab-types (:type tab))
     tab
     (let [room-id      (get-in tab [:data :room-id])
           placeholder? (= room-id "personal-ai-placeholder")
@@ -63,7 +84,7 @@
           ;; keeps it.
           (or placeholder? (nil? (get-in tab [:data :room-name])))
           (-> (assoc-in [:data :room-name] (:room/name room))
-              (assoc :title (:room/name room))))
+              (assoc :title (roster-title tab room))))
         ;; No room-id at all is the same conclusion by a shorter route: the
         ;; legacy `:chat-room` backlink opens a tab carrying only a title.
         (assoc-in tab [:data :room-missing?] true)))))

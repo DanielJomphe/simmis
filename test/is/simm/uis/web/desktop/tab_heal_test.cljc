@@ -24,6 +24,10 @@
 
 (defn- chat-tab [data] {:id "t1" :type :chat :title "Chat" :data data})
 
+(def ^:private thread-root #uuid "7c2f0b1e-3d55-4a20-9a71-0c6f2e4b8a13")
+
+(defn- thread-tab [data] {:id "t2" :type :chat-thread :title "Thread" :data data})
+
 (deftest a-deep-link-tab-learns-its-scope-and-name
   (testing "the cold-boot deep link: room-id only, because the URL carries
             nothing else and the roster did not exist yet"
@@ -80,6 +84,36 @@
           healed    (tab-heal/heal-chat-tab condemned rooms personal)]
       (is (nil? (get-in healed [:data :room-missing?])))
       (is (= (str scope-id) (get-in healed [:data :db-scope]))))))
+
+(deftest a-thread-tab-is-a-room-tab-and-heals-like-one
+  (testing "a deep link to a thread carries a room id and nothing else, so it
+            fails the same way a chat deep link does"
+    (let [healed (tab-heal/heal-chat-tab
+                  (thread-tab {:room-id (str room-id)
+                               :thread-root-id (str thread-root)})
+                  rooms personal)]
+      (is (= (str scope-id) (get-in healed [:data :db-scope]))
+          "without this the thread column waits for a replica nobody requested")
+      (is (= "Ada's Assistants" (get-in healed [:data :room-name])))
+      (is (= "Thread · Ada's Assistants" (:title healed))
+          "the label says which room the thread is in, as open-tab! writes it")
+      (is (nil? (get-in healed [:data :room-missing?])))))
+
+  (testing "thread identity survives the repair — it is not a room id"
+    (let [healed (tab-heal/heal-chat-tab
+                  (thread-tab {:room-id (str room-id)
+                               :thread-root-id (str thread-root)})
+                  rooms personal)]
+      (is (= :chat-thread (:type healed)) "a thread tab is never rewritten to :chat")
+      (is (= (str thread-root) (get-in healed [:data :thread-root-id])))))
+
+  (testing "a thread in a room the roster does not name is the same conclusion"
+    (let [healed (tab-heal/heal-chat-tab
+                  (thread-tab {:room-id "11111111-2222-3333-4444-555555555555"
+                               :thread-root-id (str thread-root)})
+                  rooms personal)]
+      (is (true? (get-in healed [:data :room-missing?])))
+      (is (= (str thread-root) (get-in healed [:data :thread-root-id]))))))
 
 (deftest non-chat-tabs-are-untouched
   (doseq [tab [{:type :wiki :data {:page-uuid "p" :db-scope "s"}}

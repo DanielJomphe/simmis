@@ -44,7 +44,7 @@
 (defn- run-send
   "Run `post-user-message!` against stubbed room plumbing, with `joinable` the
    agents whose join succeeds. Returns {:result :posted :joined :signals}."
-  [text joinable]
+  [text joinable & [in-reply-to]]
   (let [room-uuid (random-uuid)
         room {:ctx nil :id :test-room}
         posted (atom [])
@@ -53,7 +53,8 @@
         (tel/with-signals
           (with-redefs-fn
             {(room-agents-var 'ensure-providers!) (constantly nil)
-             #'rooms/get-room-agents (constantly agents)
+             #'rooms/get-room-parties (constantly agents)
+             #'rooms/get-room (constantly {})
              #'parties/get-party (constantly {:party/id sender
                                               :party/type :human
                                               :party/display-name "You"})
@@ -67,7 +68,8 @@
                  (throw (unavailable-model-ex (:party/id agent)))))
              #'d/room-target (constantly nil)
              #'d/post! (fn [_room msg] (swap! posted conj msg) msg)}
-            (fn [] (room-agents/post-user-message! room-uuid text sender nil))))]
+            (fn [] (room-agents/post-user-message! room-uuid text sender nil
+                                                   nil in-reply-to))))]
     {:result value
      :room-uuid room-uuid
      :posted @posted
@@ -140,6 +142,30 @@
       (is (str/includes? (:content (first (notes posted text)))
                          "other agents in this room are unaffected")))))
 
+(deftest the-failure-note-lands-in-the-thread-that-asked
+  (testing "asked inside a thread, answered inside that thread"
+    (let [parent (random-uuid)
+          text "still there?"
+          {:keys [posted]} (run-send text [var-vor sol] parent)
+          sent (first (user-messages posted text))
+          note (first (notes posted text))]
+      (is (= parent (:in-reply-to sent))
+          "the human's message is a reply into the thread it was typed in")
+      (is (d/same-thread? sent note)
+          "so is the note — a person who asks inside a thread must not watch it
+           stay silent while the explanation appears at the room root")
+      (is (= (:id sent) (:in-reply-to note))
+          "and it is a reply to that message, the way a healthy agent answers")))
+
+  (testing "asked at the room root, answered under it"
+    (let [text "anyone?"
+          {:keys [posted]} (run-send text [var-vor])
+          sent (first (user-messages posted text))
+          note (first (notes posted text))]
+      (is (nil? (:in-reply-to sent)))
+      (is (d/same-thread? sent note))
+      (is (= (:id sent) (:in-reply-to note))))))
+
 (deftest every-agent-unavailable-still-posts-the-message
   (let [text "anyone home?"
         {:keys [result posted joined signals]} (run-send text [])]
@@ -153,8 +179,8 @@
     (testing "the message is still in the timeline, addressed to no agent"
       (let [sent (user-messages posted text)]
         (is (= 1 (count sent)))
-        (is (= (room-agents/party->actor-kw sender) (:to (first sent)))
-            "self-addressed: persisted and rendered, delivered to no participant")))
+        (is (= :_room-log (:to (first sent)))
+            "the reserved log endpoint: persisted and projected, delivered to no participant")))
 
     (testing "the room says why, once per failing agent"
       (is (= 3 (count (notes posted text))))
@@ -180,7 +206,8 @@
         (tel/with-signals
           (with-redefs-fn
             {(room-agents-var 'ensure-providers!) (constantly nil)
-             #'rooms/get-room-agents (constantly agents)
+             #'rooms/get-room-parties (constantly agents)
+             #'rooms/get-room (constantly {})
              #'parties/get-party (constantly {:party/id sender :party/type :human})
              #'room-agents/live-room (constantly room)
              #'room-agents/ensure-room-projector! (constantly nil)
@@ -265,7 +292,8 @@
       (reset! projector-cache #{})
       (with-redefs-fn
         {(room-agents-var 'ensure-providers!) (constantly nil)
-         #'rooms/get-room-agents (constantly [healthy-party (agent-party lun "Lun")])
+         #'rooms/get-room-parties (constantly [healthy-party (agent-party lun "Lun")])
+         #'rooms/get-room (constantly {})
          #'parties/get-party (fn [id] (when (= id sender) sender-party))
          #'room-agents/live-room (constantly room)
          #'room-agents/ensure-room-party-entity! (constantly nil)
@@ -306,7 +334,8 @@
         posted (atom [])
         result (with-redefs-fn
                  {(room-agents-var 'ensure-providers!) (constantly nil)
-                  #'rooms/get-room-agents (constantly [])
+                  #'rooms/get-room-parties (constantly [])
+                  #'rooms/get-room (constantly {})
                   #'parties/get-party (constantly {:party/id sender
                                                    :party/type :human
                                                    :party/display-name "You"})
