@@ -10,6 +10,8 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [dvergr.discourse :as d]
+            [dvergr.room.store :as room-store]
+            [dvergr.room.store.memory :as memory-store]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.parties :as parties]
             [is.simm.model.rooms :as rooms]
@@ -278,6 +280,42 @@
               (is (= 2 @join-attempts))
               (is (= 1 (count @(:participants room))))
               (is (= [actor] @dropped)))))))))
+
+(deftest the-room-note-survives-a-room-that-actually-stores-messages
+  ;; `(d/room id)` has NO store, so the integration test below never reaches
+  ;; `validate-message-metadata!`. Every real room has one, and dvergr#51 closed
+  ;; that vocabulary: an unmodelled key is REJECTED, `post-join-failure-note!`
+  ;; swallows the throw in its catch, and the room goes silent about why an
+  ;; agent did not answer — with only the operator warning to show for it.
+  (let [room (d/make-room {:id :join-isolation-durable :store (memory-store/make)})]
+    (try
+      (with-redefs-fn
+        {(room-agents-var 'ensure-providers!) (constantly nil)
+         #'rooms/get-room-parties (constantly agents)
+         #'rooms/get-room (constantly {})
+         #'parties/get-party (constantly {:party/id sender :party/type :human
+                                          :party/display-name "You"})
+         #'room-agents/live-room (constantly room)
+         #'room-agents/ensure-room-party-entity! (constantly nil)
+         #'room-agents/ensure-room-projector! (constantly nil)
+         #'room-agents/ensure-agent-joined!
+         (fn [_ _ agent _]
+           (when (= lun (:party/id agent)) (throw (unavailable-model-ex lun))))}
+        (fn []
+          (let [result (room-agents/post-user-message! (random-uuid) "durable?" sender nil)
+                stored (d/messages room)]
+            (is (= [lun] (:unavailable result)))
+            (is (some #(= "durable?" (:content %)) stored)
+                "the human's message is stored")
+            (is (some #(re-find #"cannot answer here" (str (:content %))) stored)
+                "and so is the note naming the agent that could not run"))))
+      (finally (d/close-room! room)))))
+
+(deftest the-failure-note-metadata-is-a-vocabulary-dvergr-models
+  (doseq [t [:model-unavailable :join-error]]
+    (is (= {:role :system :kind t}
+           (room-store/validate-message-metadata! {:role :system :kind t}))
+        "the note's metadata must survive the durable vocabulary check")))
 
 (deftest real-discourse-and-projector-keep-the-send-and-healthy-reply
   (let [room-uuid (random-uuid)

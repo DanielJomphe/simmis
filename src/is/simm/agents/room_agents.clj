@@ -2810,7 +2810,14 @@
   (try
     (binding [rtc/*execution-context* (:ctx room)]
       (let [content (join-failure-note failure others-answering?)
-            metadata {:role :system :system-note type}
+            ;; `:kind`, not `:system-note`. dvergr#51 closed the durable
+            ;; metadata vocabulary: a key the room store does not model is
+            ;; REJECTED, and this function swallows that in its catch — so the
+            ;; note never reached a datahike-backed room and the room stayed
+            ;; silent about why an agent did not answer, with only the operator
+            ;; warning to show for it. `:kind` is modelled and round-trips as
+            ;; `:message/metadata-kind`; nothing ever read `:system-note`.
+            metadata {:role :system :kind type}
             from-actor (party->actor-kw agent)]
         (d/post! room (if human-msg
                         (d/reply from-actor sender-kw content human-msg metadata)
