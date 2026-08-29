@@ -6,11 +6,13 @@
    clients never need a slug registry and never receive another room's Runs."
   (:require [datahike.api :as d]
             [dvergr.agent.run :as run]
+            [dvergr.room.registry :as room-registry]
             [is.simm.agents.room-agents :as room-agents]
             [is.simm.model.parties :as parties]
             [is.simm.model.system-db :as system-db]
             [kabel.pubsub :as pubsub]
             [kabel.pubsub.protocol :as proto]
+            [org.replikativ.spindel.engine.core :as ec]
             [taoensso.telemere :as log]))
 
 (def ^:private watcher-key ::publisher)
@@ -54,6 +56,17 @@
               :party/display-name)
       (some-> actor name)))
 
+(defn- run-world-live?
+  "Does this exact Run still own a process-local retained Room capability?"
+  [room-id r]
+  (when-let [world-id (:run/world r)]
+    (boolean
+     (when-let [room (room-agents/live-room room-id)]
+       (binding [ec/*execution-context* (:ctx room)]
+         (when-let [world (room-registry/lookup world-id)]
+           (and (= (:id room) (:parent-id world))
+                (= (:run/id r) (some-> world :meta deref :run-id)))))))))
+
 (defn run-summary
   "Serializable, UI-sized projection. Live ChatContexts and cancellation
    handles never cross this boundary."
@@ -65,9 +78,15 @@
            :actor-name (actor-name (:run/actor r))
            :trigger-id (str (:run/trigger r))
            :status (:run/status r)
+           :world-id (some-> (:run/world r) name)
+           :isolation (:run/isolation r)
+           :settlement-policy (:run/settlement-policy r)
+           :settlement-status (:run/settlement-status r)
+           :settlement-reason (:run/settlement-reason r)
            :created-at (some-> ^java.util.Date (:run/created-at r) .getTime)
            :started-at (some-> ^java.util.Date (:run/started-at r) .getTime)
            :updated-at (some-> ^java.util.Date (:run/updated-at r) .getTime)}
+    (:run/world r) (assoc :world-live? (run-world-live? room-id r))
     (:run/parent r) (assoc :parent-id (str (:run/parent r)))
     (:run/ended-at r) (assoc :ended-at (.getTime ^java.util.Date (:run/ended-at r)))
     (:run/reason r) (assoc :reason (:run/reason r))
@@ -83,17 +102,30 @@
       :recent (mapv #(run-summary room-id %) (run/runs room {:limit limit}))}
      {:room-id (str room-id) :active [] :recent []})))
 
+(defn publish-run!
+  "Publish one authoritative durable Run projection to every subscribed room
+   client. Lifecycle changes normally arrive through the Dvergr watcher; later
+   human settlement decisions use this explicit bridge because they happen
+   after the execution lifecycle has finished."
+  [room-id type r]
+  (try
+    (when-let [topic (ensure-topic-registered! room-id)]
+      (pubsub/publish! @peer-ref topic
+                       {:type type
+                        :room-id (str room-id)
+                        :run (run-summary room-id r)}))
+    (catch Throwable t
+      (log/log! {:level :warn :id ::publish-failed
+                 :data {:event-type type :error (ex-message t)}}
+                "Failed to publish Run event"))))
+
 (defn- publish-event! [{:keys [type run] :as event}]
   (try
     ;; The installation snapshot usually precedes client subscriptions. Initial
     ;; state is therefore served by room-snapshot; ordered deltas begin here.
     (when (and run (not= type :runs/snapshot))
       (when-let [room-id (runtime-room->room-id (:run/room run))]
-        (when-let [topic (ensure-topic-registered! room-id)]
-          (pubsub/publish! @peer-ref topic
-                           {:type type
-                            :room-id (str room-id)
-                            :run (run-summary room-id run)}))))
+        (publish-run! room-id type run)))
     (catch Throwable t
       (log/log! {:level :warn :id ::publish-failed
                  :data {:event-type type :error (ex-message t)}}

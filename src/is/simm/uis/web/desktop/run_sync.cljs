@@ -39,6 +39,12 @@
                      (fn [runs] (vec (remove #(= (:id %) (:id run)) runs))))
           (update-in [room-id :recent] (fnil upsert-run []) run))
 
+      :run/settled
+      (-> state
+          (update-in [room-id :active]
+                     (fn [runs] (vec (remove #(= (:id %) (:id run)) runs))))
+          (update-in [room-id :recent] (fnil upsert-run []) run))
+
       state)))
 
 (defn- apply-event! [room-id event]

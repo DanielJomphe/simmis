@@ -127,6 +127,38 @@
                (el/dd {} (str value))))
            facts))))))
 
+(defn- settlement-view [run]
+  (when-let [settlement-status (:settlement-status run)]
+    (let [review? (= :review settlement-status)
+          world-live? (:world-live? run)]
+      (el/section {:class (str "run-section run-world run-world--"
+                              (name settlement-status))}
+        (el/div {:class "run-section-heading"}
+          (el/div {}
+            (el/h3 {} "Work world")
+            (el/p {} (run-detail/settlement-label run)))
+          (el/span {:class (str "run-world-status run-world-status--"
+                               (name settlement-status))}
+            (-> settlement-status name str/capitalize)))
+        (el/div {:class "run-world-facts"}
+          (when-let [policy (:settlement-policy run)]
+            (el/span {} (str "Policy · " (name policy))))
+          (when-let [isolation (:isolation run)]
+            (el/span {} (str "Isolation · " (name isolation))))
+          (when-let [world-id (:world-id run)]
+            (el/span {:class "run-world-id"} world-id))
+          (when review?
+            (el/span {:class (str "run-world-availability run-world-availability--"
+                                  (if world-live? "live" "unavailable"))}
+              (if world-live?
+                "Capability retained"
+                "Capability unavailable"))))
+        (when review?
+          (el/p {:class "run-world-guidance"}
+            (if world-live?
+              "This isolated world is available for durable proposal promotion."
+              "The durable Run remains auditable, but this process no longer holds its settlement capability.")))))))
+
 (defn view
   "Render one Run. `live-run` wins for transient :cancelling status; durable
    detail supplies history, effects, outputs, and structural relations."
@@ -193,6 +225,8 @@
                     (related-run-button known-parent :parent on-open-run))
                   (map #(related-run-button % :child on-open-run)
                        (:children detail)))))
+
+            (settlement-view run)
 
             (el/section {:class "run-section"}
               (el/div {:class "run-section-heading"}
