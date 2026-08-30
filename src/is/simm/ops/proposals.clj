@@ -19,6 +19,47 @@
 
 (defn- conn [] (sdb/get-conn))
 
+(defn- proposal-message-id
+  "Stable room-log identity for a Proposal, including ambiguous commit retry."
+  [proposal-id]
+  (java.util.UUID/nameUUIDFromBytes
+   (.getBytes (str "simmis:proposal-message:" proposal-id)
+              java.nio.charset.StandardCharsets/UTF_8)))
+
+(defn- sha-256 [value]
+  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes (pr-str value)
+                                   java.nio.charset.StandardCharsets/UTF_8))]
+    (apply str (map #(format "%02x" (bit-and 0xff %)) digest))))
+
+(defn- fork-filing-value
+  [{:keys [scope authority-scope branch base-commit system-type
+           world-system-id settlement-id settlement-state descriptor]
+    fork-author :author}]
+  ;; A positional value gives pr-str a stable order independent of map
+  ;; implementation. Descriptor is already persisted through pr-str below.
+  [scope authority-scope (name branch) (some-> base-commit str) system-type
+   (some-> world-system-id str) settlement-id settlement-state
+   (some-> descriptor pr-str) fork-author])
+
+(defn- filing-hash
+  [{:keys [title summary author room run adoption forks intent]}]
+  (sha-256 [title summary author room run adoption
+            (or intent fs/default-intent)
+            (mapv fork-filing-value forks)]))
+
+(defn- file-proposal-if-absent
+  "Datahike transaction function: an id is one immutable ForkSet filing."
+  [db entity]
+  (if-let [existing (d/entity db [:proposal/id (:proposal/id entity)])]
+    (if (= (:proposal/filing-hash entity)
+           (:proposal/filing-hash existing))
+      []
+      (throw (ex-info "Proposal id is already filed with different content"
+                      {:type :proposal/filing-conflict
+                       :proposal (:proposal/id entity)})))
+    [entity]))
+
 (defn file-proposal!
   "Record an open proposal. `forks` = [{:scope uuid :branch str
    :base-commit str :system-type kw :author uuid} …]. Returns the proposal id.
@@ -30,33 +71,86 @@
    see `is.simm.model.forkset`. It decides which view the row appears in, so a
    caller filing a budget rather than a patch must say so; nothing about the
    fork itself distinguishes them."
-  [{:keys [title summary author room forks intent]}]
+  [{:keys [id title summary author room run adoption forks intent]}]
   {:pre [(string? title) (seq forks)
          (or (nil? intent) (contains? fs/intents intent))]}
-  (let [id (random-uuid)]
-    (d/transact (conn)
-      [(cond-> {:proposal/id id
+  (let [id (or id (random-uuid))
+        ;; A proposal's canonical chat identity is reserved in the SAME
+        ;; transaction as the proposal. Publication may crash and retry, but it
+        ;; must never mint a second card. Roomless legacy/import rows remain
+        ;; intentionally unpublishable.
+        message-id (when room (proposal-message-id id))
+        filing-hash (filing-hash {:title title :summary summary :author author
+                                  :room room :run run :adoption adoption
+                                  :forks forks :intent intent})
+        entity
+        (cond-> {:proposal/id id
                 :proposal/title title
                 :proposal/status :open
                 :proposal/created-at (java.util.Date.)
-                :proposal/forks (mapv (fn [{:keys [scope branch base-commit system-type]
+                :proposal/filing-hash filing-hash
+                :proposal/forks (mapv (fn [{:keys [scope authority-scope branch
+                                                   base-commit system-type
+                                                   world-system-id settlement-id
+                                                   settlement-state descriptor]
                                             fork-author :author}]
                                         (cond-> {:proposal.fork/scope scope
                                                  :proposal.fork/branch (name branch)}
                                           base-commit (assoc :proposal.fork/base-commit (str base-commit))
+                                          authority-scope (assoc :proposal.fork/authority-scope
+                                                                 authority-scope)
                                           system-type (assoc :proposal.fork/system-type system-type)
+                                          world-system-id (assoc :proposal.fork/world-system-id
+                                                                 (str world-system-id))
+                                          settlement-id (assoc :proposal.fork/settlement-id settlement-id)
+                                          settlement-state (assoc :proposal.fork/settlement-state
+                                                                  settlement-state)
+                                          descriptor (assoc :proposal.fork/descriptor (pr-str descriptor))
                                           fork-author (assoc :proposal.fork/author fork-author)))
                                       forks)}
          summary (assoc :proposal/summary summary)
          author  (assoc :proposal/author author)
          room    (assoc :proposal/room room)
+         room    (assoc :proposal/message-id message-id
+                        :proposal/message-status :pending)
+         run     (assoc :proposal/run run)
+         adoption (assoc :proposal/adoption [:world-adoption/id adoption])
          ;; only when non-default: absent already MEANS :change, and writing
          ;; the default would make old and new rows differ for no reason
          (and intent (not= fs/default-intent intent))
-         (assoc :proposal/intent intent))])
+         (assoc :proposal/intent intent))]
+    ;; The existence decision belongs to Datahike's serialized transaction
+    ;; snapshot. Concurrent/ambiguous retries cannot append anonymous component
+    ;; refs or reset lifecycle fields; a conflicting reuse of the UUID fails.
+    (d/transact (conn) [[:db.fn/call file-proposal-if-absent entity]])
     (log/log! {:level :info :id ::filed :data {:proposal id :title title
                                                :forks (count forks)}})
+    ;; Resolve lazily to keep the proposal store independent of live discourse
+    ;; plumbing. publish! records failure and leaves :pending; proposal filing
+    ;; itself remains durable and retryable even when the room is unavailable.
+    (when room
+      ((requiring-resolve 'is.simm.ops.proposal-publication/publish!) id))
     id))
+
+(defn mark-message-published!
+  "Mark the reserved canonical message durable. Idempotent."
+  [proposal-id]
+  (d/transact (conn)
+              [[:db/add [:proposal/id proposal-id]
+                :proposal/message-status :published]
+               [:db/add [:proposal/id proposal-id]
+                :proposal/message-published-at (java.util.Date.)]
+               [:db/retract [:proposal/id proposal-id]
+                :proposal/message-error]]))
+
+(defn mark-message-publication-failed!
+  "Keep publication retryable while recording its latest diagnostic."
+  [proposal-id error]
+  (d/transact (conn)
+              [[:db/add [:proposal/id proposal-id]
+                :proposal/message-status :pending]
+               [:db/add [:proposal/id proposal-id]
+                :proposal/message-error (str error)]]))
 
 (defn get-proposal [id]
   (when-let [e (d/q '[:find ?e . :in $ ?id :where [?e :proposal/id ?id]]
@@ -155,10 +249,27 @@
                                    (boolean
                                     (and party
                                          (access/can? db party :merge
-                                                      (:proposal.fork/scope f))))))
+                                                      (or (:proposal.fork/authority-scope f)
+                                                          (:proposal.fork/scope f)))))))
                           forks))
              p))
          proposals)))
+
+(defn with-capability-availability
+  "Annotate adopted-world components with process-local capability availability.
+   Ordinary branch-backed forks are durable/reopenable and remain unannotated."
+  [proposals]
+  (let [live? (requiring-resolve 'is.simm.ops.run-world-proposals/live-scope?)]
+    (mapv (fn [p]
+            (update p :proposal/forks
+                    (fn [forks]
+                      (mapv (fn [f]
+                              (if (= :world (:proposal.fork/system-type f))
+                                (assoc f :proposal.fork/capability-live?
+                                       (live? (:proposal.fork/scope f)))
+                                f))
+                            forks))))
+          proposals)))
 
 (defn- fork-branch-kw [fork] (keyword (:proposal.fork/branch fork)))
 
@@ -335,15 +446,20 @@
   [proposal-id fork]
   (let [scope (:proposal.fork/scope fork)
         b (fork-branch-kw fork)]
-    (try (branching/drop-branch! scope (fork-type fork) b)
-         (catch Exception e
-           (log/log! {:level :warn :id ::fork-discard-failed
-                      :msg "Fork branch not discarded — it is now orphaned"
-                      :data {:proposal proposal-id
-                             :scope (str scope)
-                             :branch b
-                             :system-type (:proposal.fork/system-type fork)
-                             :error (.getMessage e)}})))))
+    ;; Adopted worlds are affine capabilities with their own durable settlement
+    ;; frontier. Swallowing that failure and marking the row dismissed would be
+    ;; a false audit record, so this backend must fail the decision visibly.
+    (if (= :world (fork-type fork))
+      (branching/drop-branch! scope (fork-type fork) b)
+      (try (branching/drop-branch! scope (fork-type fork) b)
+           (catch Exception e
+             (log/log! {:level :warn :id ::fork-discard-failed
+                        :msg "Fork branch not discarded — it is now orphaned"
+                        :data {:proposal proposal-id
+                               :scope (str scope)
+                               :branch b
+                               :system-type (:proposal.fork/system-type fork)
+                               :error (.getMessage e)}}))))))
 
 (defn- fork-conflicts
   "`fork-conflict-seq` tagged with which fork each conflict came from — a
@@ -366,7 +482,11 @@
     ;; nothing has to be resolved here first. simmis used to do that pass
     ;; itself, before the content merge went upstream (geschichte 0.1.14).
     (branching/land! scope t b)
-    (branching/drop-branch! scope t b)))
+    ;; Ordinary backends merge and then delete a reusable branch name. A world
+    ;; component is an affine settlement capability: :merge itself consumes it,
+    ;; so a subsequent :discard would be a second terminal operation.
+    (when-not (= :world t)
+      (branching/drop-branch! scope t b))))
 
 (defn- authorize-forks!
   "Landing puts a fork onto TRUNK, so each fork's scope must permit `:merge` —
@@ -411,7 +531,8 @@
   (when by
    (let [db (some-> (sdb/get-conn) deref)
         refused (vec (for [f forks
-                           :let [scope (:proposal.fork/scope f)]
+                           :let [scope (or (:proposal.fork/authority-scope f)
+                                           (:proposal.fork/scope f))]
                            :when (not (access/can? db by :merge scope))]
                        (str scope)))]
     (when (seq refused)
@@ -434,7 +555,18 @@
                                     :proposal/status status
                                     :proposal/resolved-at (java.util.Date.)}
                                    (resolution-facts note by))])
+        ;; Ordinary ForkSets have no live adoption and this is a no-op. An
+        ;; adopted Run world releases its structural Dvergr ancestry only after
+        ;; every per-component terminal record is durable.
+        ((requiring-resolve
+          'is.simm.ops.run-world-proposals/release-proposal!) id)
         status))))
+
+(defn reconcile-status!
+  "Close a Proposal whose component statuses are already durably terminal.
+   Used by recovery backends after replaying an ambiguous terminal commit."
+  [id]
+  (settle-proposal! id nil nil))
 
 (defn- open-proposal!
   "The proposal `id` names, refusing anything already resolved."
@@ -648,6 +780,11 @@
                                        :proposal/status :dismissed
                                        :proposal/resolved-at (java.util.Date.)}
                                       (resolution-facts note by))))
+      ;; Whole-Proposal dismissal bypasses settle-proposal!, unlike every
+      ;; per-fork decision path. Release adopted-world ancestry only after the
+      ;; component and Proposal terminal records above are durable.
+      ((requiring-resolve
+        'is.simm.ops.run-world-proposals/release-proposal!) id)
       (log/log! {:level :info :id ::dismissed
                  :data {:proposal id :forks (count forks)
                         :noted? (not (str/blank? note))}})
