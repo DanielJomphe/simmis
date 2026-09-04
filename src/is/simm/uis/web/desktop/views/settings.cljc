@@ -215,7 +215,7 @@
         (el/div {:class "settings-section"}
           (el/h3 {:class "settings-section-title"} "Model Preference")
           (el/p {:class "settings-section-desc"}
-            "The preference agents inherit when they next join. Latest tracks new releases; an explicit choice is the preferred version and may resolve only to a newer version in the same family and provider if withdrawn. Changing this does not switch an already joined participant.")
+            "The preference your inheriting agents use. Latest tracks new releases; an explicit choice is the preferred version and may resolve only to a newer version in the same family and provider if withdrawn. Saving retires currently joined inheriting agents so their next message uses the new preference; agents with explicit overrides are unchanged.")
           (el/div {:class "settings-model-list"}
             ;; `selected?` lives IN the item; the key stays the model value.
             ;; ifor-each memoizes on item equality and cannot see a closure

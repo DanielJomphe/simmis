@@ -230,8 +230,67 @@
                    :data {:party-id party-id :fields (keys allowed)}})))))
 
 (defn update-preferred-model!
+  "Persist an owner's preference and retire live agents that inherit it.
+
+   Explicit agent overrides are unaffected. An inheriting participant captures
+   a concrete provider/model when it joins, so leaving its live contexts here
+   is the activation boundary: the next ordinary dispatch rejoins it from the
+   newly committed preference instead of silently running the old model until
+  a process restart."
   [party-id model-id]
-  (update-party! party-id {:party/preferred-model model-id}))
+  ;; Commit first. Besides preserving the failed-write rule, the post-commit
+  ;; snapshot closes the override-clear race: an agent that became inheriting
+  ;; while this preference was being saved must be part of activation.
+  (update-party! party-id {:party/preferred-model model-id})
+  (let [inheriting-agent-ids
+        (when-let [conn (system-db/get-conn)]
+          (let [db @conn]
+            (->> (d/q '[:find [?agent ...]
+                        :in $ ?owner-id
+                        :where
+                        [?owner :party/id ?owner-id]
+                        [?agent :party/owner ?owner]
+                        [?agent :actor/kind :agent]]
+                      db party-id)
+                 (map #(pull-party db %))
+                 ;; `describe-resolution` is pure and defines the same
+                 ;; configured/inherited boundary as the join path.
+                 (remove (fn [agent]
+                           (:configured?
+                            (model-selection/describe-resolution
+                             {:model-family (:party/model-family agent)
+                              :model-version (:party/model-version agent)
+                              :model (:party/model agent)}))))
+                 (map :party/id)
+                 (sort-by str)
+                 vec)))]
+    (require 'is.simm.agents.room-agents)
+    (when-let [reset-fn (resolve 'is.simm.agents.room-agents/reset-agent-contexts!)]
+      (let [failures
+            (into []
+                  (keep (fn [agent-id]
+                          (try
+                            (reset-fn agent-id)
+                            nil
+                            (catch Exception e
+                              ;; Continue through every inheriting agent: one
+                              ;; broken live participant must not preserve the
+                              ;; old preference for all later agents.
+                              (log/log! {:level :error
+                                         :id ::preferred-model-activation-failed
+                                         :msg "An inheriting agent could not be reset after an owner preference change"
+                                         :error e
+                                         :data {:owner-id party-id
+                                                :agent-id agent-id}})
+                              {:agent-id agent-id
+                               :error-class (.getName (class e))}))))
+                  inheriting-agent-ids)]
+        (when (seq failures)
+          (throw (ex-info "Model preference was saved, but some live agents could not be reset"
+                          {:type :preferred-model-activation-partial
+                           :preference-committed? true
+                           :owner-id party-id
+                           :failures failures})))))))
 
 ;; =============================================================================
 ;; Agents (create, update, delete — agents are parties)
@@ -316,8 +375,9 @@
 
    This explicit agent-edit path is separate from ordinary turns. The next
    dispatch rejoins the participant and re-resolves its model configuration.
-   Owner preference and catalog changes use different write paths and do not
-   reset an already joined participant."
+   Owner preference changes reset inheriting agents through their own write
+   path; provider-catalog refreshes remain observational and do not mutate a
+   live participant."
   [agent-id updates]
   (update-party! agent-id updates)
   ;; Leave current participants and clear their cached contexts. The next join

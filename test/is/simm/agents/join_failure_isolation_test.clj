@@ -9,6 +9,7 @@
    silence)."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [dvergr.agent.room-context :as room-ctx]
             [dvergr.discourse :as d]
             [dvergr.room.store :as room-store]
             [dvergr.room.store.memory :as memory-store]
@@ -280,6 +281,111 @@
               (is (= 2 @join-attempts))
               (is (= 1 (count @(:participants room))))
               (is (= [actor] @dropped)))))))))
+
+(deftest concurrent-dispatches-create-one-participant
+  (with-clean-join-cache
+    (fn []
+      (let [room-uuid (random-uuid)
+            agent-id (random-uuid)
+            actor (room-agents/party->actor-kw agent-id)
+            room {:ctx nil :id :concurrent-room :participants (atom {})}
+            agent (agent-party agent-id "Concurrent")
+            join-cache (var-get (room-agents-var 'joined))
+            entered (promise)
+            release (promise)
+            second-started (promise)
+            join-attempts (atom 0)
+            redefs {#'room-agents/describe-model-resolution
+                    (constantly {:model "test-model" :provider :test
+                                 :available? true})
+                    (room-agents-var 'join-participant!)
+                    (fn [r rid party _ _]
+                      (swap! join-attempts inc)
+                      (deliver entered true)
+                      @release
+                      (swap! (:participants r) assoc actor {:id actor})
+                      (swap! join-cache conj [rid (:party/id party)]))}]
+        (with-redefs-fn
+          redefs
+          (fn []
+            (let [first-join (future
+                               (room-agents/ensure-agent-joined!
+                                room room-uuid agent nil)
+                               :joined)]
+              (is (= true (deref entered 1000 ::timeout)))
+              (let [second-join (future
+                                  (deliver second-started true)
+                                  (room-agents/ensure-agent-joined!
+                                   room room-uuid agent nil)
+                                  :joined)]
+                (is (= true (deref second-started 1000 ::timeout)))
+                (is (= ::timeout (deref second-join 100 ::timeout))
+                    "the second dispatch waits for the slot owner")
+                (is (= 1 @join-attempts)
+                    "only one ctx/subscription construction enters")
+                (deliver release true)
+                (is (= :joined (deref first-join 1000 ::timeout)))
+                (is (= :joined (deref second-join 1000 ::timeout)))
+                (is (= 1 @join-attempts))
+                (is (= 1 (count @(:participants room))))))))))))
+
+(deftest collective-reset-cannot-miss-a-first-ever-join
+  (doseq [reset-kind [:room :agent]]
+    (testing (name reset-kind)
+      (with-clean-join-cache
+        (fn []
+          (let [room-uuid (random-uuid)
+                agent-id (random-uuid)
+                actor (room-agents/party->actor-kw agent-id)
+                room {:ctx nil :id :reset-race-room :participants (atom {})}
+                agent (agent-party agent-id "Reset race")
+                join-cache (var-get (room-agents-var 'joined))
+                entered (promise)
+                release (promise)
+                reset-started (promise)
+                dropped (atom [])
+                redefs {#'room-agents/describe-model-resolution
+                        (constantly {:model "test-model" :provider :test
+                                     :available? true})
+                        (room-agents-var 'join-participant!)
+                        (fn [r rid party _ _]
+                          (deliver entered true)
+                          @release
+                          (swap! (:participants r) assoc actor {:id actor})
+                          (swap! join-cache conj [rid (:party/id party)]))
+                        (room-agents-var 'leave-participant!)
+                        (fn [_ id]
+                          (swap! (:participants room) dissoc id)
+                          (swap! dropped conj :participant))
+                        #'rooms/get-room (constantly {:room/slug "reset-race"})
+                        #'room-ctx/drop-room! (fn [& _] (swap! dropped conj :room))
+                        #'room-ctx/drop-ctx! (fn [& _] (swap! dropped conj :agent))}]
+            (with-redefs-fn
+              redefs
+              (fn []
+                (let [join-future
+                      (future
+                        (room-agents/ensure-agent-joined!
+                         room room-uuid agent nil)
+                        :joined)]
+                  (is (= true (deref entered 1000 ::timeout)))
+                  (let [reset-future
+                        (future
+                          (deliver reset-started true)
+                          (case reset-kind
+                            :room (room-agents/reset-room-context! room-uuid)
+                            :agent (room-agents/reset-agent-contexts! agent-id))
+                          :reset)]
+                    (is (= true (deref reset-started 1000 ::timeout)))
+                    (is (= ::timeout (deref reset-future 100 ::timeout))
+                        "reset waits until first admission has published its slot")
+                    (deliver release true)
+                    (is (= :joined (deref join-future 1000 ::timeout)))
+                    (is (= :reset (deref reset-future 1000 ::timeout)))
+                    (is (empty? @(:participants room)))
+                    (is (not (contains? @join-cache [room-uuid agent-id])))
+                    (is (some #{:participant} @dropped))
+                    (is (some #{reset-kind} @dropped))))))))))))
 
 (deftest the-room-note-survives-a-room-that-actually-stores-messages
   ;; `(d/room id)` has NO store, so the integration test below never reaches

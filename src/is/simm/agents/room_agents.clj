@@ -43,6 +43,7 @@
             [is.simm.agents.tool-authorization :as tool-auth]
             [is.simm.agents.vocab :as vocab]
             [is.simm.model.parties :as parties]
+            [is.simm.model.system-db :as system-db]
             [is.simm.model.model-selection :as model-selection]
             [is.simm.model.model-catalog :as model-catalog]
             [is.simm.model.seed :as seed]
@@ -115,6 +116,28 @@
 ;; #{[room-uuid party-id]} — participants already joined to the live room.
 (defonce ^:private joined (atom #{}))
 
+;; Stable, process-local monitors for room, agent and participant lifecycles.
+;; The enclosing room/agent locks exist before a first participant slot does,
+;; so a collective reset cannot snapshot the cache while a new slot is being
+;; admitted. The participant lock then coordinates overlapping room and agent
+;; resets for the same slot.
+(defonce ^:private lifecycle-locks (atom {}))
+
+(defn- lifecycle-lock [k]
+  (or (get @lifecycle-locks k)
+      (get (swap! lifecycle-locks
+                  #(if (contains? % k) % (assoc % k (Object.))))
+           k)))
+
+(defn- room-lifecycle-lock [room-uuid]
+  (lifecycle-lock [::room room-uuid]))
+
+(defn- agent-lifecycle-lock [agent-party-id]
+  (lifecycle-lock [::agent agent-party-id]))
+
+(defn- participant-lock [room-uuid agent-party-id]
+  (lifecycle-lock [::participant room-uuid agent-party-id]))
+
 (defn- leave-participant!
   "Make a participant LEAVE the live dvergr room (unsubscribes its bus
    pumps). Forgetting a participant without leaving orphans its inbox
@@ -130,32 +153,41 @@
 (defn reset-room-context!
   "Drop participation for a room: LEAVE the live discourse room first
    (unsubscribe pumps), then clear caches; next dispatch re-joins and
-   dvergr re-seeds the working ctxs from the room store."
+  dvergr re-seeds the working ctxs from the room store."
   [room-uuid]
-  (let [ks (filter (fn [[rid _]] (= rid room-uuid)) @joined)]
-    (doseq [[_ pid] ks]
-      (leave-participant! room-uuid (party->actor-kw pid))))
-  (swap! joined (fn [s] (into #{} (remove (fn [[rid _]] (= rid room-uuid)) s))))
-  (when-let [slug (:room/slug (rooms/get-room room-uuid))]
-    (room-ctx/drop-room! (rstore/slug->room-id slug))))
+  (locking (room-lifecycle-lock room-uuid)
+    (let [ks (filter (fn [[rid _]] (= rid room-uuid)) @joined)]
+      (doseq [[_ pid] ks]
+        (let [k [room-uuid pid]]
+          (locking (participant-lock room-uuid pid)
+            (leave-participant! room-uuid (party->actor-kw pid))
+            (swap! joined disj k)))))
+    (when-let [slug (:room/slug (rooms/get-room room-uuid))]
+      (room-ctx/drop-room! (rstore/slug->room-id slug)))))
 
 (defn reset-agent-contexts!
   "Drop participation for an explicitly edited agent everywhere.
 
    `parties/update-agent!` calls this for model, prompt, and other direct agent
-   edits. Each live participant leaves and its cached context is cleared; the
-   next dispatch joins it again and resolves a fresh participant spec. Owner
-   preference and provider-catalog changes do not call this function, so they
-   do not alter a participant that is already joined."
+   edits; `parties/update-preferred-model!` calls it for each inheriting agent.
+   Each live participant leaves and its cached context is cleared; the next
+   dispatch joins it again and resolves a fresh participant spec. Provider-
+  catalog refreshes are observational and do not alter a participant already
+  joined."
   [agent-party-id]
-  (let [room-uuids (map first (filter (fn [[_ aid]] (= aid agent-party-id)) @joined))]
-    (doseq [rid room-uuids]
-      (leave-participant! rid (party->actor-kw agent-party-id)))
-    (swap! joined (fn [s] (into #{} (remove (fn [[_ aid]] (= aid agent-party-id)) s))))
-    (doseq [rid room-uuids]
-      (when-let [slug (:room/slug (rooms/get-room rid))]
-        (room-ctx/drop-ctx! (rstore/slug->room-id slug)
-                            (party->actor-kw agent-party-id))))))
+  (locking (agent-lifecycle-lock agent-party-id)
+    (let [room-uuids (->> @joined
+                          (filter (fn [[_ aid]] (= aid agent-party-id)))
+                          (map first)
+                          distinct)]
+      (doseq [rid room-uuids]
+        (let [k [rid agent-party-id]]
+          (locking (participant-lock rid agent-party-id)
+            (leave-participant! rid (party->actor-kw agent-party-id))
+            (swap! joined disj k)
+            (when-let [slug (:room/slug (rooms/get-room rid))]
+              (room-ctx/drop-ctx! (rstore/slug->room-id slug)
+                                  (party->actor-kw agent-party-id)))))))))
 
 ;; =============================================================================
 ;; Live discourse Room resolution
@@ -2563,9 +2595,26 @@
      call starts from no ctx and no participant, so it cannot leave a second
      responder answering every message twice."
   [room room-uuid agent-party room-conn]
-  (let [k [room-uuid (:party/id agent-party)]]
-    (when-not (contains? @joined k)
-      (let [agent-uuid (:party/id agent-party)
+  (let [agent-party-id (:party/id agent-party)
+        k [room-uuid agent-party-id]]
+    ;; Do not let two dispatch paths both pass the cache check and construct
+    ;; independent subscriptions for one address. Room and agent lifecycle
+    ;; locks also put first admission on the same boundary as collective reset.
+    (locking (room-lifecycle-lock room-uuid)
+      (locking (agent-lifecycle-lock agent-party-id)
+        (locking (participant-lock room-uuid agent-party-id)
+          (when-not (contains? @joined k)
+            (let [;; Recipient discovery and participant admission are two
+                  ;; separate DB reads. An edit can commit between them, so the
+                  ;; lifecycle boundary must refresh rather than capture a
+                  ;; pre-edit party map after the reset has already completed.
+                  agent-party (if (system-db/get-conn)
+                                (or (parties/get-party agent-party-id)
+                                    (throw (ex-info "Agent no longer exists"
+                                                    {:type :agent-not-found
+                                                     :agent-id agent-party-id})))
+                                agent-party)
+                  agent-uuid agent-party-id
             actor-kw (party->actor-kw agent-party)
             ;; Resolved HERE, once for this participant join. An explicit
             ;; override may record a family and version; an inheriting agent
@@ -2630,7 +2679,7 @@
                                  :model model
                                  :provider provider
                                  :rolled-back undone}
-                                e))))))))))
+                                e)))))))))))))
 
 (defn join-agents!
   "Join `agents` into `room` ONE AT A TIME, each isolated from the others.

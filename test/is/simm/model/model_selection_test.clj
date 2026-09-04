@@ -362,6 +362,27 @@
                     (mapv #(select-keys % [:path :authorization])
                           @requests))))))))))
 
+(deftest custom-fireworks-base-is-used-for-catalog-and-is-only-compatible
+  (fake/with-server
+   (fn [{:keys [base-url requests] :as fixture}]
+     (let [custom-base (str base-url "/fireworks-gateway")]
+       (fake/respond! fixture "/fireworks-gateway/models" fireworks-key
+                      ["accounts/fireworks/models/glm-5p2"])
+       (with-config fixture {"FIREWORKS_API_KEY" fireworks-key
+                             "FIREWORKS_BASE_URL" custom-base}
+         (fn []
+           (let [record (first (selection/catalog true))
+                 endpoint (first (selection/provider-endpoints))]
+             (is (= custom-base (:base-url record)))
+             (is (= :fireworks (:provider record)))
+             (is (= :openai-compatible (:endpoint-kind record)))
+             (is (= :openai-compatible-models-list
+                    (:catalog-contract endpoint)))
+             (is (= [{:path "/fireworks-gateway/models"
+                      :authorization (str "Bearer " fireworks-key)}]
+                    (mapv #(select-keys % [:path :authorization])
+                          @requests))))))))))
+
 (deftest identical-urls-do-not-collapse-provider-records
   (fake/with-server
    (fn [{:keys [base-url requests] :as fixture}]

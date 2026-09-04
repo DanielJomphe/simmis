@@ -90,6 +90,86 @@
       (is (= "gpt-5.5" (:model existing-before)))
       (is (= :openai (:provider existing-before))))))
 
+(deftest owner-preference-change-retires-only-inheriting-participants
+  (let [owner-id (seed-owner! "gpt-*-luna")
+        inherited (parties/create-agent! owner-id {:display-name "Inherited"})
+        explicit (parties/create-agent!
+                  owner-id {:display-name "Explicit" :model "gpt-5.5"})
+        reset-ids (atom [])]
+    (with-redefs [room-agents/reset-agent-contexts!
+                  (fn [agent-id] (swap! reset-ids conj agent-id))]
+      (parties/update-preferred-model! owner-id "gpt-*-sol"))
+    (is (= "gpt-*-sol" (:party/preferred-model (parties/get-party owner-id))))
+    (is (= [(:party/id inherited)] @reset-ids)
+        "the inherited runtime is retired; an explicit override stays live")))
+
+(deftest owner-preference-reset-failure-does-not-skip-later-agents
+  (let [owner-id (seed-owner! "gpt-*-luna")
+        first-agent (parties/create-agent! owner-id {:display-name "First"})
+        second-agent (parties/create-agent! owner-id {:display-name "Second"})
+        explicit (parties/create-agent!
+                  owner-id {:display-name "Explicit" :model "gpt-5.5"})
+        fail-id (first (sort-by str [(:party/id first-agent)
+                                    (:party/id second-agent)]))
+        calls (atom [])
+        error (with-redefs [room-agents/reset-agent-contexts!
+                            (fn [agent-id]
+                              (swap! calls conj agent-id)
+                              (when (= fail-id agent-id)
+                                (throw (ex-info "synthetic reset failure" {}))))]
+                (try
+                  (parties/update-preferred-model! owner-id "gpt-*-sol")
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e)))]
+    (is (= "gpt-*-sol" (:party/preferred-model (parties/get-party owner-id))))
+    (is (= (set [(:party/id first-agent) (:party/id second-agent)])
+           (set @calls))
+        "both inheriting agents are attempted despite one failure")
+    (is (not (some #{(:party/id explicit)} @calls)))
+    (is (= :preferred-model-activation-partial (:type (ex-data error))))
+    (is (true? (:preference-committed? (ex-data error))))
+    (is (= [fail-id] (mapv :agent-id (:failures (ex-data error)))))))
+
+(deftest override-cleared-during-owner-save-is-included-in-activation
+  (let [owner-id (seed-owner! "gpt-*-luna")
+        explicit (parties/create-agent!
+                  owner-id {:display-name "Becoming inherited"
+                            :model "gpt-5.5"})
+        agent-id (:party/id explicit)
+        original-update parties/update-party!
+        owner-write-entered (promise)
+        allow-owner-write (promise)
+        resets (atom [])]
+    (with-redefs [parties/update-party!
+                  (fn [party-id updates]
+                    (if (= owner-id party-id)
+                      (do
+                        (deliver owner-write-entered true)
+                        @allow-owner-write
+                        (original-update party-id updates))
+                      (original-update party-id updates)))
+                  room-agents/reset-agent-contexts!
+                  (fn [id] (swap! resets conj id))]
+      (let [preference-save
+            (future
+              (parties/update-preferred-model! owner-id "gpt-*-sol")
+              :saved)]
+        (is (= true (deref owner-write-entered 1000 ::timeout)))
+        ;; This is the losing interleaving from the review: the agent was
+        ;; excluded when the owner operation began, then its override vanished
+        ;; before the owner preference committed.
+        (parties/update-agent!
+         agent-id {:party/model nil
+                   :party/model-family nil
+                   :party/model-version nil
+                   :party/provider nil})
+        (deliver allow-owner-write true)
+        (is (= :saved (deref preference-save 1000 ::timeout)))
+        (is (= 2 (count (filter #{agent-id} @resets)))
+            "override clearing resets once; post-commit classification resets again")
+        (is (= "gpt-*-sol"
+               (:party/preferred-model (parties/get-party owner-id))))))))
+
 (deftest persona-options-never-copy-template-model-metadata
   (let [opts (templates/agent-options
               "Researcher"

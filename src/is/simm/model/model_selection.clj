@@ -196,8 +196,8 @@
 
 (def ^:dynamic *provider-base-urls*
   "Default provider bases. Tests bind these to local HTTP fixtures; production
-   uses the vendors' documented endpoints. OPENAI_BASE_URL, when present, still
-   overrides only the OpenAI entry."
+   uses the vendors' documented endpoints. OPENAI_BASE_URL and
+   FIREWORKS_BASE_URL, when present, override only their matching entries."
   {:openai openai-base
    :fireworks fireworks-base
    :anthropic anthropic-base})
@@ -492,7 +492,8 @@
   (let [openai-key (*env-lookup* "OPENAI_API_KEY")
         fireworks-key (*env-lookup* "FIREWORKS_API_KEY")
         anthropic-key (*env-lookup* "ANTHROPIC_API_KEY")
-        custom-openai-base (*env-lookup* "OPENAI_BASE_URL")]
+        custom-openai-base (*env-lookup* "OPENAI_BASE_URL")
+        custom-fireworks-base (*env-lookup* "FIREWORKS_BASE_URL")]
     (cond-> []
       (seq anthropic-key)
       (conj {:provider :anthropic
@@ -505,11 +506,19 @@
 
       (seq fireworks-key)
       (conj {:provider :fireworks
-             :base-url (normalize-base-url (:fireworks *provider-base-urls*))
+             :base-url (normalize-base-url
+                        (or (not-empty custom-fireworks-base)
+                            (:fireworks *provider-base-urls*)))
              :credential-source "FIREWORKS_API_KEY"
              :endpoint-kind :openai-compatible
              :native-openai? false
-             :catalog-contract :fireworks-inference-models-list
+             ;; The observed Fireworks list contract is evidence only for the
+             ;; vendor inference base. An operator-supplied base asserts generic
+             ;; OpenAI compatibility; it must not inherit a vendor-specific
+             ;; promise merely because the credential remains Fireworks-scoped.
+             :catalog-contract (if (seq custom-fireworks-base)
+                                 :openai-compatible-models-list
+                                 :fireworks-inference-models-list)
              :credential fireworks-key})
 
       (seq openai-key)
